@@ -1,0 +1,125 @@
+FC4Hook changelog
+=================
+
+1.1.0 - modding toolkit
+  Loose-file mods
+    - fc4hook\mods\<Mod>\files\... : put game files at their in-game path and the game loads
+      them instead of its own; new paths work too (new archetypes, textures, animation
+      packages). Packed automatically at startup into data_win32\fc4hook_loose.* (only when
+      something changed) and mounted above all game archives. Load order via
+      mods\load_order.txt, later mod wins; conflicts are logged
+    - New Mods tab: every installed mod, with on/off switches
+    - Gibbed __UNKNOWN\<hash>.ext files can be shipped as they are
+    - Disabled mods' armory.txt entries are hidden too
+  Developer tools
+    - File log: records every file path the game asks for, with its file id (also in
+      dumps\file_log.txt); path -> file id calculator
+    - Resource log (in the File log): every resource the game creates, with its engine type
+      ([CAnimationPackageResource], meshes, move data...), including ones it loads by id
+      without a path; "Record from game start" to catch what loads with the world
+    - "Label animation clips": tags every animation clip in the log with its length and the
+      weapon / bone names stored inside it (e.g. {2.30s ak74m RightHand}), so you can find a
+      gun's animations and swap them; also written to dumps\animation_clips.txt
+    - Extract any logged file from the game's archives (LZO decompressed) to
+      dumps\extracted\, and "swap test": make file A load game file B in one click
+      (mods\FC4Hook_SwapTest)
+    - Texture editing: extracting a texture also writes a .dds of the whole image (both
+      .xbt halves joined); "Install edited textures" packs every edited .dds back into the
+      game's format in mods\MyTextures. Your edited .dds is never overwritten by a re-extract
+    - fc4hook\tools\fc4tex.exe: the same converter outside the game (drag .xbt / .dds onto it)
+    - Spawner: spawn any archetype id in front of you with the game's own factory
+      (weapons from the Armory list, props, vehicles, NPCs, your own archetypes); remove them
+    - Animation: attach/detach animation packages, play / force-play animations by path on
+      you or on what you spawned, StartPlayAnim/StopPlayAnim, show the current animation
+    - Animation state browser: 540 of the game's Move-graph states (holster, draw, takedowns,
+      cover, swimming...) and animation packages, searchable, one click to play/attach;
+      also picks up every new name your File log records
+  Plugin API v3
+    - HookVtable / UnhookVtable, OnPresent render callback with the game's D3D11 device,
+      context and swapchain, FileId(path), QueueLua54, GetLooseStatus
+    - MinHook is now initialised thread-safely
+  Lua
+    - Game Lua: ModFileId, ModArchetypeFile, ModLooseStatus, ModFileLog, FC4Spawn.*, FC4Anim.*
+    - Lua 5.4: fc4.file_id, fc4.file_log, fc4.loose_status, mem.vtable
+  Fixes
+    - Attachments: guns whose attachment limit is used up (or 0, like the AK-47, Skorpion
+      and M133) now take attachments too
+    - Fly: "Freeze body" works straight away, also when switched on mid-flight, and is
+      re-applied while flying. "Steady camera" was removed: the game function it used only
+      blocks scripted camera changes, not the falling camera
+
+1.0.0 - first public release
+  Menu
+    - New tab layout: Cheats, Armory, Travel, Co-op, Console, Settings, About
+      (+ Developer when developer mode is on)
+    - Error/warning counter at the top of the menu; click it to open the Console
+    - Menu size setting, refreshed look
+  Cheats
+    - God mode, unlimited ammo, slow motion and time lock are now on/off switches that
+      stay on through deaths, cutscenes and loads
+    - "Remember switches" keeps them on after restarting the game
+    - Slow motion speed slider, time of day sliders + presets
+    - 5 saved teleport positions, "Unstick (up 30 m)"
+    - Weather and world-unlock buttons; anything the game doesn't support is greyed out
+    - Bell tower travel no longer turns your God mode switch off when you land
+    - Optional hotkeys for god mode, unlimited ammo, refill, slow motion, Armory
+  Armory
+    - Every weapon in the game (73): all categories incl. signature weapons, with the
+      game's real template ids, plus experimental throwables
+    - Search, favourites, "Give whole category", queued gives, per-weapon result
+    - Optional ammo refill after giving
+    - Your own list in armory\custom.txt; mods add entries with mods\<Mod>\armory.txt
+    - No custom weapons bundled any more
+  Logger
+    - Log levels (debug/info/warn/error) with millisecond timestamps
+    - Previous session kept as fc4hook.prev.log
+    - Crash reports in fc4hook\crashes\ (fault address as module+offset, registers,
+      stack, loaded modules, last log lines)
+    - Console: level filters, text filter, copy, clear, open folder, colours,
+      Lua command history, "=expr" to print a value
+    - Lua: ModLogDebug / ModLogWarn / ModLogError
+    - Much quieter by default (diagnostic detail moved to the debug level; file-access
+      tracing is now opt-in: [Debug] TraceFileAccess=1)
+  Settings
+    - fc4hook.ini is created with comments on first start; everything editable in game
+  New cheats
+    - Infinite magazine (never reload), no fall damage, speed boost (adjustable),
+      fly (W/A/S/D, Space/Ctrl, Shift = fast) and noclip, launch up
+    - Money (set/add), XP, skill points, costume switch (experimental)
+    - Teleport to any outpost or safe house (list built from the world), and to the
+      current objective
+    - Fly: zero fall speed, steady camera (locks the falling camera/pose adjuster), optional
+      frozen body, and Space/Ctrl are kept from the game (DirectInput filter) so they don't
+      jump/deploy the wingsuit or crouch while flying
+  Armory
+    - Attachments: lists the attachments the gun in your hands actually supports (read
+      from the gun itself), shows which are fitted, fits them with the game's own routine,
+      and removes them all
+  Lua 5.4
+    - A stock Lua 5.4 runs alongside the game's Lua 5.1: 64-bit integers, game.* bridge
+      (call any game function, handles for game objects), mem.* with plain integers,
+      fc4.* (ticks, timers, events, keys, files, menu buttons). Scripts: fc4hook\lua\
+    - Console can run Game Lua or Lua 5.4; Developer > Lua 5.4 tab
+    - Game Lua gets ModKeyDown(vk)
+  Memory binder
+    - Read/write/scan game memory from Lua: Mem* functions + the Mem.* wrapper
+      (typed reads/writes, strings, bytes, signature scan, RIP resolve, pointer chains,
+      dumps, entity objects incl. Mem.player(), freeze, native call). Cheat Engine style
+      address expressions like "[FC64+2DD8958]+8"; bad addresses return nil, no crash
+    - Developer > Memory tab: live value viewer/writer, watch list with freeze, hex view
+  Travel
+    - Fixed: teleporting to a bell tower could re-teleport you every frame (delay, then
+      stuck glitching, blocking fast travel/quitting). Now one teleport, waits until you
+      arrive, re-drops only if you fall through, hard 30 s limit, else sends you back
+    - Cancel travel button
+  Scripting / plugins
+    - Lua: ModSetState / ModGetState, ModVersion, ModFileExists, shared FC4.* helpers,
+      one shared tick dispatcher (FC4Ticks) that switches off a broken module instead
+      of spamming errors
+    - Plugin API v2: LogLevel, SetState/GetState, GetRootDir, VersionString
+      (plugins should check  api->version >= FC4HOOK_API_VERSION)
+  Removed
+    - Research/extraction scripts tied to one game build, the armory test script and
+      the bundled custom weapon
+
+0.9.0 - private build (Lua bridge, overlay, co-op tower fix, tower travel, armory, mod archive)

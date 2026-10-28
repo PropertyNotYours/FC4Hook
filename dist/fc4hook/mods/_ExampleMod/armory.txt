@@ -1,0 +1,2 @@
+# [Example weapons]
+# My new gun = 123456789012345

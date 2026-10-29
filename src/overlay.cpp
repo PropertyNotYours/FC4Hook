@@ -73,12 +73,25 @@ static bool KeyPressed(int vk) {
 
 static void Lua(const char* code, const char* chunk) { QueueLua(code, chunk); }
 
+// Hold L3 + R3 (both sticks pressed) for half a second to open / close the menu with a pad.
+static void PollGamepadCombo(bool focused) {
+    static ULONGLONG since = 0; static bool fired = false;
+    uint16_t b = 0;
+    bool combo = g_cfg.padMenu && focused && PadRead(0, &b) && (b & 0x0040) && (b & 0x0080);   // LEFT_THUMB | RIGHT_THUMB
+    if (!combo) { since = 0; fired = false; return; }
+    ULONGLONG now = GetTickCount64();
+    if (!since) since = now;
+    if (!fired && now - since >= 500) { fired = true; g_menuOpen = !g_menuOpen; LogL(LOG_DEBUG, "Menu %s (gamepad)", g_menuOpen ? "opened" : "closed"); }
+}
+
 static void PollHotkeys() {
     bool focused = GameFocused();
+    PollGamepadCombo(focused);
     // Keep the edge state of every bound key fresh even when unfocused.
     bool menu = KeyPressed(g_cfg.menuKey);
     bool god = KeyPressed(g_cfg.hkGodMode), ammo = KeyPressed(g_cfg.hkAmmo), refill = KeyPressed(g_cfg.hkRefill);
     bool slow = KeyPressed(g_cfg.hkSlowMo), armory = KeyPressed(g_cfg.hkMenuArmory), fly = KeyPressed(g_cfg.hkFly);
+    bool hud = KeyPressed(g_cfg.hkHud), brake = KeyPressed(g_cfg.hkBrake);
     if (!focused || s_captureKey) return;
     if (menu) { g_menuOpen = !g_menuOpen; LogL(LOG_DEBUG, "Menu %s", g_menuOpen ? "opened" : "closed"); }
     bool typing = g_menuOpen && ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
@@ -89,6 +102,8 @@ static void PollHotkeys() {
     if (slow)   Lua("if FC4Cheats then FC4Cheats.toggle('slowmo') end", "=hotkey");
     if (armory) { g_menuOpen = true; s_selectTab = "Armory"; }
     if (fly)    Lua("if FC4Cheats then FC4Cheats.toggle('fly') end", "=hotkey");
+    if (hud)    Lua("if FC4Cheats then FC4Cheats.toggle('hud') end", "=hotkey");
+    if (brake)  Lua("if FC4Cheats then FC4Cheats.brake() end", "=hotkey");
 }
 
 static void PollMouse() {
@@ -124,6 +139,7 @@ static bool SwallowFlyInput(UINT msg, WPARAM w, LPARAM l) {
 
 static LRESULT CALLBACK HookWndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
     if ((msg == WM_KEYDOWN || msg == WM_KEYUP) && (int)w == g_cfg.menuKey) return 0;
+    if (msg == WM_DEVICECHANGE && s_imguiInit && !g_menuOpen) ImGui_ImplWin32_WndProcHandler(h, msg, w, l);   // gamepad plugged in
     if (SwallowFlyInput(msg, w, l)) return msg == WM_INPUT ? DefWindowProcW(h, msg, w, l) : 0;
     if (g_menuOpen && s_imguiInit) {
         ImGui_ImplWin32_WndProcHandler(h, msg, w, l);
@@ -193,6 +209,22 @@ static void CheatSwitch(const char* label, const char* key, const char* native, 
     if (help) Help(help);
 }
 
+// Slider bound to a cheats.txt value: shows the live value, sends FC4Cheats.<fn>(<args>, v) on release.
+static void CfgSlider(const char* id, const char* stateKey, const char* def, float lo, float hi, const char* fmt,
+                      const char* luaFmt, float width = 14) {
+    static std::map<std::string, float> vals;
+    float& v = vals.emplace(id, -1e9f).first->second;
+    if (v < -1e8f || !ImGui::IsAnyItemActive()) v = (float)atof(GetState(stateKey, def).c_str());
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * width);
+    ImGui::BeginDisabled(!LuaReady());
+    ImGui::SliderFloat(id, &v, lo, hi, fmt);
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        char lua[128]; snprintf(lua, sizeof(lua), luaFmt, v); Lua(lua, "=cheats");
+        snprintf(lua, sizeof(lua), "%.2f", v); SetState(stateKey, lua);
+    }
+    ImGui::EndDisabled();
+}
+
 static void TabCheats() {
     NeedWorldNote();
     ImGui::SeparatorText("Player");
@@ -222,7 +254,7 @@ static void TabCheats() {
         }
         ImGui::EndDisabled();
     }
-    CheatSwitch("Fly", "fly", "CAPI_Entity.SetGravity", "W/A/S/D to move, Space up, Ctrl down, hold Shift to go fast.");
+    CheatSwitch("Fly", "fly", "CAPI_Entity.SetEntityPositionVec3", "W/A/S/D to move, Space up, Ctrl down, hold Shift to go fast.");
     ImGui::SameLine(ImGui::GetFontSize() * 14);
     CheatSwitch("Noclip", "noclip", "CAPI_Entity.SetImmuneToCollisions", "Fly through walls and terrain (turns fly on).");
     {
@@ -249,6 +281,42 @@ static void TabCheats() {
     }
     if (ActionButton("Launch up", "CAPI_Player.SetWorldSpeed")) Lua("FC4Cheats.launch(25)", "=cheats");
     Help("Throws you into the air. Pair it with No fall damage, or the wingsuit.");
+
+    ImGui::SeparatorText("Camera & HUD");
+    CheatSwitch("FOV", "fov", "CAPI_Player.SetPlayerFOV", "Your own field of view, past the game's menu limit. Uses the game's FOV override, so aiming and cutscenes still work.");
+    ImGui::SameLine(ImGui::GetFontSize() * 14);
+    CfgSlider("##fov", "cheat.fov", "90", 50, 150, "%.0f degrees", "FC4Cheats.setFov('fov', %.0f)");
+    CheatSwitch("Weapon FOV", "fovnear", "CAPI_Player.SetPlayerNearFOV", "Field of view of your arms and gun (the game draws them with their own camera). Lower = gun looks bigger.");
+    ImGui::SameLine(ImGui::GetFontSize() * 14);
+    CfgSlider("##fovnear", "cheat.fov_near", "70", 30, 120, "%.0f degrees", "FC4Cheats.setFov('fovnear', %.0f)");
+    {
+        std::string gf = GetState("cheat.fov_game");
+        if (!gf.empty()) ImGui::TextDisabled("Game FOV when you loaded in: %s degrees", gf.c_str());
+    }
+    CheatSwitch("Hide HUD", "hud", "SetHudVisible", "Hides the minimap, crosshair, prompts and meters. Bind a hotkey in Settings to flip it quickly.");
+
+    ImGui::SeparatorText("Vehicles");
+    CheatSwitch("Vehicle speed boost", "vboost", "CAPI_Vehicle.SetVehicleSpeed", "While you hold the throttle (W / right trigger) your vehicle speeds up faster, up to the top speed below. Let go or brake and it drives normally.");
+    ImGui::SameLine(ImGui::GetFontSize() * 14);
+    CfgSlider("##vboostx", "cheat.vboostx", "2", 1.25f, 6.0f, "%.2fx acceleration", "FC4Cheats.setVehicleCfg('vboostx', %.2f)");
+    CfgSlider("top speed", "cheat.vmax", "250", 80, 600, "%.0f km/h", "FC4Cheats.setVehicleCfg('vmax', %.0f)");
+    ImGui::SameLine();
+    if (ActionButton("Instant brake", "CAPI_Vehicle.SetVehicleSpeed")) Lua("FC4Cheats.brake()", "=cheats");
+    Help("Stops your vehicle dead. Bind a hotkey for it in Settings.");
+
+    ImGui::SeparatorText("Karma");
+    {
+        std::string k = GetState("cheat.karma");
+        size_t bar = k.find('|');
+        if (!k.empty() && bar != std::string::npos) ImGui::Text("Karma level %s   (%s karma points)", k.substr(0, bar).c_str(), k.substr(bar + 1).c_str());
+        static int karma = 500;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        ImGui::InputInt("##karma", &karma, 100, 1000);
+        if (karma < 1) karma = 1;
+        ImGui::SameLine();
+        if (ActionButton("Give karma", "CAPI_Player.GivePlayerKarma")) { char lua[64]; snprintf(lua, sizeof(lua), "FC4Cheats.karma(%d)", karma); Lua(lua, "=cheats"); }
+        Help("Karma levels unlock shop discounts and the karma rewards (like the Kyrat militia helping you).");
+    }
 
     ImGui::SeparatorText("Money & progress");
     {
@@ -807,6 +875,11 @@ static void TabSettings() {
     KeyBind("Slow motion", &g_cfg.hkSlowMo, 5);
     KeyBind("Open Armory", &g_cfg.hkMenuArmory, 6);
     KeyBind("Fly", &g_cfg.hkFly, 7);
+    KeyBind("Hide HUD", &g_cfg.hkHud, 8);
+    KeyBind("Instant brake", &g_cfg.hkBrake, 9);
+    if (ImGui::Checkbox("Gamepad: hold L3 + R3 to open/close the menu", &g_cfg.padMenu)) SaveConfig();
+    Help("Press both thumbsticks in for half a second. In the menu: D-pad / left stick to move between buttons and tabs, "
+         "A to press, B to go back. While the menu is open the game doesn't get your pad.");
     ImGui::TextDisabled("Click a key to change it. Hotkeys work while you play (menu closed or open).");
 
     ImGui::SeparatorText("Menu");
@@ -1043,7 +1116,8 @@ static void TabMods() {
     static std::set<std::string> changed;
     if (!changed.empty()) ImGui::TextColored(ImVec4(1, 0.85f, 0.35f, 1), "Restart the game to apply your changes.");
     if (mods.empty()) { ImGui::TextDisabled("No mods installed."); return; }
-    if (ImGui::BeginTable("mods", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+    if (ImGui::BeginTable("mods", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY,
+                          ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * std::min<int>(8, (int)mods.size() + 2)))) {
         ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Mod");
         ImGui::TableSetupColumn("Loose files", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 10);
@@ -1066,9 +1140,83 @@ static void TabMods() {
         }
         ImGui::EndTable();
     }
+
+    // ---- which loose file wins, and what it replaces
+    ImGui::SeparatorText("Loose files in use");
+    static std::vector<VfsFileEntry> files;
+    static std::map<uint64_t, int> inGame;            // 1 replaces a game file, 0 new file
+    static std::atomic<int> checking{ 0 };            // 0 idle, 1 running, 2 done
+    static std::mutex inGameMx;
+    if (files.empty() || ImGui::IsWindowAppearing()) files = VfsFiles();
+    static char ff[128] = "";
+    static bool onlyConflicts = false;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    ImGui::InputTextWithHint("##vff", "search path or mod...", ff, sizeof(ff));
+    ImGui::SameLine(); ImGui::Checkbox("only conflicts", &onlyConflicts);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(checking == 1 || files.empty());
+    if (ImGui::Button(checking == 1 ? "checking..." : "Check against game files")) {
+        checking = 1;
+        std::vector<uint64_t> ids; for (auto& f : files) ids.push_back(f.id);
+        RunExtractJob([ids] {
+            std::map<uint64_t, int> r;
+            for (uint64_t id : ids) r[id] = GameFileExists(id) ? 1 : 0;
+            { std::lock_guard<std::mutex> lk(inGameMx); inGame.swap(r); }
+            checking = 2;
+        });
+    }
+    ImGui::EndDisabled();
+    Help("Every file the loose-file archive holds right now (from your last game start), the mod it comes from, and which "
+         "other mods shipped the same file but lost on load order. \"Check against game files\" also tells you whether each "
+         "file replaces one of the game's files or is new.");
+    if (files.empty()) { ImGui::TextDisabled("No loose files are in use."); return; }
+    int conflicts = 0; for (auto& f : files) if (!f.beaten.empty()) ++conflicts;
+    ImGui::TextDisabled("%d files, %d with conflicts", (int)files.size(), conflicts);
+    std::string fl = Lower(ff);
+    std::map<uint64_t, int> ig;
+    { std::lock_guard<std::mutex> lk(inGameMx); ig = inGame; }
+    if (ImGui::BeginTable("vfiles", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+                          ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 14))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("File");
+        ImGui::TableSetupColumn("From mod", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9);
+        ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 7);
+        ImGui::TableSetupColumn("Also in (lost)", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 10);
+        ImGui::TableHeadersRow();
+        std::vector<int> vis;
+        for (int i = 0; i < (int)files.size(); ++i) {
+            auto& f = files[i];
+            if (onlyConflicts && f.beaten.empty()) continue;
+            if (!fl.empty() && Lower(f.rel).find(fl) == std::string::npos && Lower(f.mod).find(fl) == std::string::npos) continue;
+            vis.push_back(i);
+        }
+        ImGuiListClipper clip;
+        clip.Begin((int)vis.size());
+        while (clip.Step())
+            for (int r = clip.DisplayStart; r < clip.DisplayEnd; ++r) {
+                auto& f = files[vis[r]];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(f.rel.c_str());
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("file id %016llx, %llu bytes", (unsigned long long)f.id, (unsigned long long)f.size);
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(f.mod.c_str());
+                ImGui::TableNextColumn();
+                auto it = ig.find(f.id);
+                if (it == ig.end()) ImGui::TextDisabled("?");
+                else if (it->second) ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "replaces");
+                else ImGui::TextColored(ImVec4(0.5f, 0.9f, 1, 1), "new file");
+                ImGui::TableNextColumn();
+                if (f.beaten.empty()) ImGui::TextDisabled("-");
+                else {
+                    std::string b; for (auto& m : f.beaten) b += (b.empty() ? "" : ", ") + m;
+                    ImGui::TextColored(ImVec4(1, 0.5f, 0.5f, 1), "%s", b.c_str());
+                }
+            }
+        ImGui::EndTable();
+    }
 }
 
 // ------------------------------------------------------- dev: file log ---
+static std::string s_flSel, s_swapA, s_swapB;     // File log selection + swap pair (shared with the clip monitor)
 static void TabFileLog() {
     if (!FileLogAvailable()) { ImGui::TextDisabled("Not available: the game's path-to-id function wasn't found (other game version?)."); return; }
     ImGui::TextWrapped("Records every file path the game asks for, and every resource the game creates (lines with [Type]: "
@@ -1094,7 +1242,7 @@ static void TabFileLog() {
         ImGui::SameLine(); if (ImGui::SmallButton("copy")) { char b[32]; snprintf(b, sizeof(b), "%016llx", (unsigned long long)id); ImGui::SetClipboardText(b); }
     }
     // ---- extract / swap (click a line below to select it)
-    static std::string sel, swapA, swapB;
+    std::string& sel = s_flSel; std::string& swapA = s_swapA; std::string& swapB = s_swapB;
     ImGui::SeparatorText("Extract / swap test");
     ImGui::TextWrapped("Selected: %s", sel.empty() ? "(click a line below)" : sel.c_str());
     ImGui::BeginDisabled(sel.empty());
@@ -1295,6 +1443,35 @@ static void TabAnimation() {
     ImGui::EndDisabled();
     std::string st = GetState("anim.status");
     if (!st.empty()) ImGui::TextWrapped("Last: %s", st.c_str());
+
+    ImGui::SeparatorText("Clip monitor");
+    if (!ClipMonitorAvailable()) ImGui::TextDisabled("Unavailable: the game's clip-start function wasn't found.");
+    else {
+        bool cm = ClipMonitorEnabled();
+        if (ImGui::Checkbox("Watch clips starting", &cm)) ClipMonitorSetEnabled(cm);
+        ImGui::SameLine(); if (ImGui::Button("Clear##cm")) ClipMonitorClear();
+        ImGui::SameLine(); Help("Lists every animation clip the moment the game starts playing it, newest first, with its labels "
+                                "(press Label animation clips in the File log first for labels). Stand somewhere quiet, press Clear, "
+                                "reload: the reload clips are at the top. Replace / With fill the swap pair in the File log tab.");
+        static std::vector<ClipEvent> ev;
+        static uint64_t evSerial = ~0ull;
+        if (evSerial != ClipMonitorSerial()) { ev = ClipMonitorEvents(); evSerial = ClipMonitorSerial(); }
+        ImGui::TextDisabled("%d clips started%s", (int)ev.size(), s_swapA.empty() ? "" : "   (swap pair set: finish it in File log)");
+        ImGui::BeginChild("clips", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), true);
+        uint64_t now = GetTickCount64();
+        for (size_t i = 0; i < ev.size(); ++i) {
+            char idb[24]; snprintf(idb, sizeof(idb), "%016llx", (unsigned long long)ev[i].id);
+            std::string lab = ClipLabelFor(ev[i].id);
+            std::string line = std::string(idb) + "  [CAnimationResource] (no path)" + (lab.empty() ? "" : " {" + lab + "}");
+            ImGui::PushID((int)i);
+            if (ImGui::SmallButton("Replace")) s_swapA = line;
+            ImGui::SameLine(); if (ImGui::SmallButton("With")) s_swapB = line;
+            ImGui::SameLine(); ImGui::TextDisabled("%5.1fs ago", (now - ev[i].tick) / 1000.0);
+            ImGui::SameLine(); ImGui::Text("%s  %s", idb, lab.c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
 
     ImGui::SeparatorText("State browser");
     if (!s_animLoaded) LoadAnimNames();
@@ -1579,6 +1756,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDXGISwapChain* sc, UINT sync, UINT 
                 ImGuiIO& io = ImGui::GetIO();
                 static std::string ini = Narrow(g_rootDir) + "imgui.ini";
                 io.IniFilename = ini.c_str();
+                io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;   // D-pad / A / B navigate the menu
                 ImGui::StyleColorsDark();
                 ImGuiStyle& st = ImGui::GetStyle();
                 st.WindowRounding = 6; st.FrameRounding = 4; st.TabRounding = 4; st.GrabRounding = 3;
@@ -1605,7 +1783,9 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDXGISwapChain* sc, UINT sync, UINT 
     if (s_imguiInit) {
         if (!s_rtv) CreateRTV(sc);
         ImGui_ImplDX11_NewFrame();
+        PadPassThrough(true);              // ImGui reads the real pad (the game gets an idle one while the menu is open)
         ImGui_ImplWin32_NewFrame();
+        PadPassThrough(false);
         PollHotkeys();
         if (g_menuOpen) PollMouse();
         ImGui::NewFrame();
@@ -1620,6 +1800,7 @@ static HRESULT STDMETHODCALLTYPE hk_Present(IDXGISwapChain* sc, UINT sync, UINT 
         } else {
             s_captureKey = 0;
         }
+        LuaUiDraw(g_menuOpen);             // Lua 5.4 scripts' windows (overlay ones also with the menu closed)
         ImGui::Render();
         if (s_rtv) {
             ID3D11RenderTargetView* oldRtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};

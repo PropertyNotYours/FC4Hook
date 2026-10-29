@@ -43,6 +43,24 @@ fc4.*
   fc4.file_log([on]) -> on      record every file path the game asks for (dumps\file_log.txt)
   fc4.loose_status()            loose-file mods: "12 files (unchanged, reused), mounted"
 
+fc4.ui  (your own windows inside FC4Hook's overlay)
+  local w = fc4.ui.window("My Mod" [, { width = 320, height = 240, overlay = false }])
+  w:text("hello")                               -> widget (widget:set("new text"))
+  w:button("Heal me", function() ... end)
+  w:checkbox("God mode", false, function(on) ... end)
+  w:slider("Speed", 1, 5, 2, function(v) ... end)      (called when you let go)
+  w:input("Name", "Ajay", function(text) ... end)      (called on Enter / leaving the box)
+  w:combo("Weapon", { "AK", "SVD" }, 1, function(index) ... end)
+  w:progress(0.5, "half")   w:separator("Section")   w:same_line():button(...)
+  widget:set(v)  widget:get()  widget:on(fn)   w:show() / w:hide() / w:close()
+  Normal windows show while the F8 menu is open. overlay = true windows are drawn all the
+  time (click-through while the menu is closed): use them for HUD info, e.g.
+    local hud = fc4.ui.window("Stats", { overlay = true })
+    local t = hud:text("")
+    fc4.every(0.5, function() t:set("Health: " .. tostring(game.CAPI_Pawn.GetPawnHealth(game.player()))) end)
+  Callbacks run on the script thread, so they can call game.* and mem.* safely.
+  Windows go away when the Lua 5.4 scripts reload. Example: lua\examples\ui_demo.lua
+
 Notes
   * A tick/timer that errors is switched off and logged (Console tab), the rest keep running.
   * os.exit is removed. io/os/debug are available: you're running inside the game, be careful.

@@ -5,7 +5,7 @@
 --   ModLog(...), ModLogDebug(...), ModLogWarn(...), ModLogError(...)   -> fc4hook.log + console
 --   ModWriteFile(path, text [, append]), ModReadFile(path), ModFileExists(path)   (under fc4hook\)
 --   ModSetState(key, value), ModGetState(key)   share values with the menu / C++ plugins
---   ModVersion()                                "1.1.0"
+--   ModVersion()                                "1.3.0"
 --   ModArchiveStatus()                          state of data_win32\fc4hook_mods.dat
 --   ModTeleportEntityPos / ModGetEntityPositionVec3   game natives FC4Hook digs out
 --   ...and the tower helpers used by the Co-op and Travel tabs.

@@ -1,7 +1,7 @@
 === NEXUS MODS PAGE TEXT (paste the parts below into the Nexus form) ===
 
 MOD NAME:   FC4Hook - Script Hook and Mod Menu
-VERSION:    1.1.0
+VERSION:    1.3.0
 CATEGORY:   Utilities  (alt: Cheats and God Items)
 SUMMARY (short description, max 350 chars):
 An in-game mod menu and script hook for Far Cry 4. Cheats that stay on (god mode, infinite ammo, slow-mo, time of day, teleports), an Armory with every weapon in the game, bell tower fast travel, a co-op tower reward fix, a proper log/console, and Lua + C++ modding support.
@@ -11,8 +11,8 @@ REQUIREMENTS (Nexus "Requirements" section):
   - Far Cry 4 PC, patch 1.10
 
 FILES TO UPLOAD:
-  Main file:     FC4Hook-1.1.0.zip           ("FC4Hook 1.1.0")
-  Optional file: FC4Hook-1.1.0-source.zip    ("FC4Hook 1.1.0 source code + plugin SDK")
+  Main file:     FC4Hook-1.3.0.zip           ("FC4Hook 1.3.0")
+  Optional file: FC4Hook-1.3.0-source.zip    ("FC4Hook 1.3.0 source code + plugin SDK")
 
 === DESCRIPTION (BBCode) ===
 
@@ -24,20 +24,20 @@ FC4Hook loads into Far Cry 4 and adds an in-game menu (press [b]F8[/b]). It talk
 
 [size=4][b]Features[/b][/size]
 [list]
-[*][b]Cheats[/b]: god mode, unlimited ammo, [b]infinite magazine[/b], no fall damage, [b]speed boost[/b], [b]fly & noclip[/b], launch, money / XP / skill points, refill ammo, slow motion with a speed slider, time of day with a time lock, storms and blizzards, 5 saved teleport positions, an "unstick" teleport, and unlocks for safe houses, fast travel, shop items and crafting. Switches stay on through deaths, cutscenes and loading, and can be remembered between sessions. Optional hotkeys.
+[*][b]Cheats[/b]: god mode, unlimited ammo, [b]infinite magazine[/b], no fall damage, [b]speed boost[/b], [b]fly & noclip[/b], [b]FOV & weapon FOV sliders[/b], [b]hide HUD[/b], [b]vehicle speed boost & instant brake[/b], launch, money / XP / skill points / karma, refill ammo, slow motion with a speed slider, time of day with a time lock, storms and blizzards, 5 saved teleport positions, an "unstick" teleport, and unlocks for safe houses, fast travel, shop items and crafting. Switches stay on through deaths, cutscenes and loading, and can be remembered between sessions. Optional hotkeys.
 [*][b]Armory[/b]: give yourself [b]any weapon in the game[/b] (73): every handgun, SMG, shotgun, assault rifle, LMG, sniper, launcher, bow, flamethrower and melee weapon, plus [b]all signature weapons[/b]. Search, favourites, and "give whole category". Plus an attachments menu: fit any attachment the gun in your hands supports.
 [*][b]Mods as folders[/b]: drop game files into [i]fc4hook\mods\<ModName>\files\[/i] at their in-game path and the game loads them instead of its own, or adds them when the path is new (new weapons/NPC archetypes, textures, models, animation packages). No archive tools, no replaced game files; switch mods on/off in the Mods tab, with load order.
 [*][b]Teleports[/b]: jump to any liberated bell tower, any outpost or safe house, or your current objective, from anywhere on the map, with a safe landing.
 [*][b]Co-op tower reward fix[/b]: co-op guests normally never get bell tower rewards. FC4Hook hands them out (both players need FC4Hook).
 [*][b]Logger & console[/b]: a live log with levels, filters, copy, an in-game Lua console, the previous session's log, and automatic [b]crash reports[/b] to attach to bug reports.
-[*][b]For modders[/b]: runs Lua scripts and C++ plugins inside the game, a browser for every function the game exposes to Lua (call them from the menu), a [b]memory binder[/b] (read/write/scan game memory from Lua, Cheat Engine style pointer expressions, freeze values) with an in-game memory viewer, an embedded [b]Lua 5.4[/b] alongside the game's Lua 5.1 (64-bit integers, call any game function), a Lua editor, a [b]file log[/b] that lists every file the game loads (find what to replace), a [b]spawner[/b] for any archetype, [b]animation tools[/b] (attach packages, play animations through the game's animation system), custom content archive loading, and Armory integration for weapon mods. Plugin API with function/vtable hooks and a render callback with the game's D3D11 device. Source code and plugin SDK available.
+[*][b]For modders[/b]: runs Lua scripts and C++ plugins inside the game, a browser for every function the game exposes to Lua (call them from the menu), a [b]memory binder[/b] (read/write/scan game memory from Lua, Cheat Engine style pointer expressions, freeze values) with an in-game memory viewer, an embedded [b]Lua 5.4[/b] alongside the game's Lua 5.1 (64-bit integers, call any game function), a Lua editor, a [b]file log[/b] that lists every file the game loads (find what to replace), a [b]spawner[/b] for any archetype, [b]animation tools[/b] (attach packages, play animations through the game's animation system), custom content archive loading, and Armory integration for weapon mods. Lua scripts can draw their own menu windows and HUD overlays (fc4.ui). Plugin API with function/vtable hooks and a render callback with the game's D3D11 device. Source code and plugin SDK available.
 [/list]
 
 [size=4][b]Installation[/b][/size]
 [list=1]
 [*]Install [url=https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases]Ultimate ASI Loader[/url] (x64): put its dll in [i]Far Cry 4\bin\[/i] named [b]winmm.dll[/b].
 [*]Copy the contents of the archive's [b]bin[/b] folder into [i]Far Cry 4\bin\[/i].
-[*]Start the game. A green "FC4Hook v1.1.0 loaded" banner appears. Load a save and press [b]F8[/b].
+[*]Start the game. A green "FC4Hook v1.3.0 loaded" banner appears. Load a save and press [b]F8[/b] (gamepad: hold both sticks in).
 [/list]
 Vortex: install as normal, then make sure [i]fc4hook.asi[/i] ended up in [i]Far Cry 4\bin\[/i].
 

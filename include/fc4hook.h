@@ -23,7 +23,7 @@
 #include <stddef.h>
 
 // 1 = FC4Hook 0.x, 2 = FC4Hook 1.0 (adds LogLevel, SetState/GetState, GetRootDir, VersionString)
-// 3 = FC4Hook 1.1 (adds vtable hooks, render callback + D3D11 objects, file ids, Lua 5.4 queue)
+// 3 = FC4Hook 1.2 (adds vtable hooks, render callback + D3D11 objects, file ids, Lua 5.4 queue)
 #define FC4HOOK_API_VERSION 3
 
 // Log levels for LogLevel()
@@ -84,9 +84,9 @@ typedef struct FC4HookAPI {
     void        (*SetState)(const char* key, const char* value);
     int         (*GetState)(const char* key, char* buf, size_t bufSize);
     const wchar_t* (*GetRootDir)(void);                          // ...\bin\fc4hook\  (trailing slash)
-    const char* (*VersionString)(void);                          // "1.1.0"
+    const char* (*VersionString)(void);                          // "1.3.0"
 
-    // --- API version 3 (FC4Hook 1.1) --------------------------------------
+    // --- API version 3 (FC4Hook 1.2) --------------------------------------
     // Replace entry `index` of an object's virtual table (affects every object of that class).
     // *original receives the old function; call it from your detour. Returns 1 on success.
     int         (*HookVtable)(void* object, int index, void* detour, void** original);

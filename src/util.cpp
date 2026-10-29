@@ -69,6 +69,9 @@ void LoadConfig() {
     g_cfg.hkSlowMo      = IniInt(L"Hotkeys", L"SlowMotion", 0);
     g_cfg.hkMenuArmory  = IniInt(L"Hotkeys", L"OpenArmory", 0);
     g_cfg.hkFly         = IniInt(L"Hotkeys", L"Fly", 0);
+    g_cfg.hkHud         = IniInt(L"Hotkeys", L"HideHud", 0);
+    g_cfg.hkBrake       = IniInt(L"Hotkeys", L"Brake", 0);
+    g_cfg.padMenu       = IniInt(L"Hotkeys", L"GamepadMenu", 1) != 0;
     if (g_cfg.menuKey <= 0 || g_cfg.menuKey > 254) g_cfg.menuKey = VK_F8;
 }
 
@@ -89,6 +92,9 @@ void SaveConfig() {
     IniSetInt(L"Hotkeys", L"SlowMotion", g_cfg.hkSlowMo);
     IniSetInt(L"Hotkeys", L"OpenArmory", g_cfg.hkMenuArmory);
     IniSetInt(L"Hotkeys", L"Fly", g_cfg.hkFly);
+    IniSetInt(L"Hotkeys", L"HideHud", g_cfg.hkHud);
+    IniSetInt(L"Hotkeys", L"Brake", g_cfg.hkBrake);
+    IniSetInt(L"Hotkeys", L"GamepadMenu", g_cfg.padMenu ? 1 : 0);
 }
 
 std::string KeyName(int vk) {

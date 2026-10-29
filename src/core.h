@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.1.0"
+#define FC4HOOK_VERSION      "1.3.1"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -33,6 +33,9 @@ struct Config {
     int   hkSlowMo       = 0;
     int   hkMenuArmory   = 0;
     int   hkFly          = 0;
+    int   hkHud          = 0;
+    int   hkBrake        = 0;
+    bool  padMenu        = true;     // hold L3+R3 to open/close the menu with a gamepad
 };
 extern Config g_cfg;
 void LoadConfig();
@@ -92,12 +95,24 @@ void VfsMounted(bool ok);
 std::string VfsStatus();
 struct VfsModEntry { std::string name; int files; bool enabled; bool hasFiles; };
 std::vector<VfsModEntry> VfsMods();
+struct VfsFileEntry { uint64_t id; std::string rel, mod; uint64_t size; std::vector<std::string> beaten; };
+std::vector<VfsFileEntry> VfsFiles();
+bool GameFileExists(uint64_t id);         // extract.cpp: indexes the game's archives on first use
 bool VfsModEnabled(const std::string& name);
 void VfsSetModEnabled(const std::string& name, bool on);   // takes effect next start
 void FileLogInstall();
 bool ResourceLogAvailable();
 void FileLogAnnotate(const std::map<uint64_t, std::string>& labels);
 int  LabelAnimationClips(std::string* msg);        // extract.cpp
+struct ClipEvent { uint64_t tick; uint64_t id; uintptr_t ctx; };
+void ClipMonitorInstall();
+bool ClipMonitorAvailable();
+bool ClipMonitorEnabled();
+void ClipMonitorSetEnabled(bool on);              // also (re)loads labels from dumps\animation_clips.txt
+void ClipMonitorClear();
+uint64_t ClipMonitorSerial();
+std::vector<ClipEvent> ClipMonitorEvents();       // newest first
+std::string ClipLabelFor(uint64_t id);
 bool FileLogAtStartup();
 void FileLogSetAtStartup(bool on);
 bool ParseLogLine(const std::string& line, uint64_t* id, std::string* path, std::string* type);
@@ -156,6 +171,13 @@ struct Lua54Button { int id; std::string label, group; };
 std::vector<Lua54Button> Lua54Buttons();         // buttons scripts added with fc4.menu.button()
 void Lua54PressButton(int id);
 const LuaReg* MemoryFunctions(int* count);
+// fc4.ui (luaui.cpp): Lua 5.4 scripts' own ImGui windows
+struct UiEvent { int id; double num; bool isText; std::string text; };
+void LuaUiOpen(lua_State* L54);                  // adds fc4.ui to the fc4 table on top of the 5.4 stack
+void LuaUiReset();
+std::vector<UiEvent> LuaUiTakeEvents();
+void LuaUiDraw(bool menuOpen);                   // render thread
+int  LuaUiWindowCount();
 
 // Cheat Engine style address expressions: "FC64+2DD8958", "[FC64+2DD8958]+8", "0x7FF6...",
 // "[[game.exe+10]+20]-8". Numbers are hex (0x optional). Returns false + reason on error.
@@ -169,6 +191,8 @@ bool        MemWriteValue(uintptr_t a, const char* type, const char* value, std:
 // ---- overlay / plugins -----------------------------------------------------
 bool OverlayInit();
 bool InputInit();                                // DirectInput keyboard filter (input.cpp)
+void PadPassThrough(bool on);                    // this thread reads the real pad (menu)
+bool PadRead(int user, uint16_t* buttons);       // real XInput buttons, for the menu combo
 void AddMenuCallback(void (*cb)());
 void AddPresentCallback(void (*cb)(void* swapChain));
 void* D3DDevice();                               // ID3D11Device* (null until the overlay attached)

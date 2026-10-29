@@ -198,6 +198,13 @@ static void EnsureIndex() {
     Log("extract: indexed %d game archives, %d files", (int)fats.size(), (int)s_index.size());
 }
 
+// Is `id` one of the game's own files? (indexes the archives the first time: a few seconds)
+bool GameFileExists(uint64_t id) {
+    std::lock_guard<std::mutex> lk(s_idxMx);
+    EnsureIndex();
+    return s_index.count(id) > 0;
+}
+
 // Read file `id` from the game's archives (decompressed).
 bool GameFileRead(uint64_t id, std::vector<uint8_t>& out, std::string* err, std::string* from) {
     ArcEntry a;

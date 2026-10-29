@@ -277,7 +277,7 @@ static int L_ModGetState(lua_State* L) {
     if (v == "\x01") return 0;
     return ReturnLua(L, Quote(v));
 }
-// ModVersion() -> "1.1.0"
+// ModVersion() -> "1.3.0"
 static int L_ModVersion(lua_State* L) { return ReturnLua(L, Quote(FC4HOOK_VERSION)); }
 // ModFileExists(relPath) -> true/nil   (under fc4hook\)
 static int L_ModFileExists(lua_State* L);
@@ -1266,6 +1266,7 @@ bool GameInit() {
     RegisterLuaFunction("ModLooseStatus", L_ModLooseStatus);
     RegisterLuaFunction("ModFileLog", L_ModFileLog);
     FileLogInstall();
+    ClipMonitorInstall();
     if (FileLogAtStartup() && FileLogAvailable()) FileLogSetEnabled(true);
     uintptr_t fc64 = FC64Base();
     bool ok = true;

@@ -61,6 +61,7 @@ struct LooseFile {
     std::wstring src;
     std::string  rel, mod;
     uint64_t     size = 0, mtime = 0;
+    std::vector<std::string> beaten;     // mods that also ship this file and lost (load order)
 };
 
 struct VfsModInfo { std::string name; int files = 0; bool enabled = true; bool hasFiles = false; };
@@ -123,8 +124,11 @@ static void Walk(const std::wstring& dir, const std::string& relPrefix, const st
         f.mtime = ((uint64_t)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime;
         uint64_t id = IdForRel(rel);
         auto it = out.find(id);
-        if (it != out.end() && it->second.mod != mod)
+        if (it != out.end() && it->second.mod != mod) {
             LogL(LOG_INFO, "mods: %s overrides %s for %s", mod.c_str(), it->second.mod.c_str(), rel.c_str());
+            f.beaten = it->second.beaten;
+            f.beaten.push_back(it->second.mod);
+        }
         out[id] = f;
         ++count;
     } while (FindNextFileW(h, &fd));
@@ -307,6 +311,15 @@ void VfsMounted(bool ok) {
     else s_vfsStatus += ", mounted";
 }
 
+// Every loose file the archive holds (for the Mods tab's file browser).
+std::vector<VfsFileEntry> VfsFiles() {
+    std::lock_guard<std::mutex> lk(s_vfsMx);
+    std::vector<VfsFileEntry> r;
+    r.reserve(s_files.size());
+    for (auto& kv : s_files) r.push_back({ kv.first, kv.second.rel, kv.second.mod, kv.second.size, kv.second.beaten });
+    return r;
+}
+
 std::string VfsStatus() { std::lock_guard<std::mutex> lk(s_vfsMx); return s_vfsStatus; }
 
 std::vector<VfsModEntry> VfsMods() {
@@ -428,6 +441,69 @@ void FileLogInstall() {
 }
 
 bool ResourceLogAvailable() { return o_CreateRes != nullptr; }
+
+// CLIP MONITOR: FC64's animation-clip node starts playing a clip in one function
+// (FUN_180514b00 on patch 1.10, shared by the Move graph's clip node classes): node+0x28 is
+// the CAnimationResource, node+0x38 the clip id (m_animNameHash = the clip's file id). Logging
+// it shows exactly which clips start when you do something (reload, draw, melee...).
+typedef void (*ClipStart_t)(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_t a5, uint8_t a6, void** out);
+static ClipStart_t o_ClipStart = nullptr;
+static std::atomic<bool> s_clipOn{ false };
+static std::mutex s_clipMx;
+static std::deque<ClipEvent> s_clips;
+static std::atomic<uint64_t> s_clipSerial{ 0 };
+static std::map<uint64_t, std::string> s_clipLabels;
+
+static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_t a5, uint8_t a6, void** out) {
+    o_ClipStart(node, ctx, a3, a4, a5, a6, out);
+    if (!s_clipOn.load(std::memory_order_relaxed) || !node) return;
+    uint64_t id = *(uint64_t*)((uint8_t*)node + 0x38);
+    if (id == ~0ull) return;
+    std::lock_guard<std::mutex> lk(s_clipMx);
+    s_clips.push_front({ GetTickCount64(), id, (uintptr_t)ctx });
+    if (s_clips.size() > 400) s_clips.pop_back();
+    ++s_clipSerial;
+}
+
+void ClipMonitorInstall() {
+    uintptr_t f = FindPattern("FC64.dll",
+        "4C 89 4C 24 20 53 55 41 56 48 81 EC D0 00 00 00 48 8B E9 48 8B 49 28 4C 8B F2 48 85 C9 0F 84");
+    if (!f) { LogL(LOG_WARN, "clip monitor: clip-start function not found"); return; }
+    if (!CreateHook((void*)f, (void*)hk_ClipStart, (void**)&o_ClipStart)) { LogL(LOG_WARN, "clip monitor: hook failed"); o_ClipStart = nullptr; return; }
+    LogL(LOG_DEBUG, "clip monitor: hooked clip start at FC64+0x%llx", (unsigned long long)(f - FC64Base()));
+}
+bool ClipMonitorAvailable() { return o_ClipStart != nullptr; }
+bool ClipMonitorEnabled() { return s_clipOn.load(); }
+void ClipMonitorSetEnabled(bool on) {
+    if (on) {                                           // pick up labels from "Label animation clips"
+        std::map<uint64_t, std::string> lab;
+        FILE* f = _wfopen((g_rootDir + L"dumps\\animation_clips.txt").c_str(), L"rb");
+        if (f) {
+            char line[600];
+            while (fgets(line, sizeof(line), f)) {
+                std::string l = line;
+                while (!l.empty() && (l.back() == '\r' || l.back() == '\n')) l.pop_back();
+                if (l.size() < 19 || l[0] == '#') continue;
+                std::string t = l.substr(18);
+                size_t b = t.find("   [");
+                if (b != std::string::npos) t.resize(b);
+                lab[_strtoui64(l.substr(0, 16).c_str(), nullptr, 16)] = t;
+            }
+            fclose(f);
+        }
+        std::lock_guard<std::mutex> lk(s_clipMx);
+        s_clipLabels.swap(lab);
+    }
+    s_clipOn = on;
+}
+void ClipMonitorClear() { std::lock_guard<std::mutex> lk(s_clipMx); s_clips.clear(); ++s_clipSerial; }
+uint64_t ClipMonitorSerial() { return s_clipSerial.load(); }
+std::vector<ClipEvent> ClipMonitorEvents() { std::lock_guard<std::mutex> lk(s_clipMx); return std::vector<ClipEvent>(s_clips.begin(), s_clips.end()); }
+std::string ClipLabelFor(uint64_t id) {
+    std::lock_guard<std::mutex> lk(s_clipMx);
+    auto it = s_clipLabels.find(id);
+    return it == s_clipLabels.end() ? std::string() : it->second;
+}
 
 // Append " {label}" to "(no path)" lines of these ids (in the list and for future lines' sake
 // in the recent buffer; the file on disk is left as it is).

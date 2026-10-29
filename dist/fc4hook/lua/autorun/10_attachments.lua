@@ -100,6 +100,15 @@ function A.callFit(e, limit)
   return A.list[e.i] and A.list[e.i].on, spawned
 end
 
+-- A fitted suppressor swaps the gun's sound set, and the old firing loop could keep playing
+-- (bug report: "gun firing sound playing repeatedly"). Tell the gun to stop shooting right
+-- away and once more half a second later, like holding the weapon wheel did.
+function A.settle(wid)
+  if not wid then return end
+  game.pcall("CAPI_Weapon.StopShooting", wid)
+  fc4.after(0.5, function() game.pcall("CAPI_Weapon.StopShooting", wid) end)
+end
+
 -- Fit entry i (1-based) on the gun in your hands.
 function A.fit(i)
   A.scan()
@@ -116,6 +125,7 @@ function A.fit(i)
   end
   if ok then
     fc4.log("Attachments: " .. e.label .. " fitted")
+    A.settle(A.weapon)
   else
     fc4.warn(string.format("Attachments: %s - the game didn't fit it (capacity %d, object %s)",
                            e.label, cap, spawned and "made" or "not made"))

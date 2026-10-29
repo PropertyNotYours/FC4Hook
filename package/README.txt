@@ -1,10 +1,11 @@
-FC4Hook v1.1.0 - script hook & mod menu for Far Cry 4 (PC)
+FC4Hook v1.3.0 - script hook & mod menu for Far Cry 4 (PC)
 ===========================================================
 
 FC4Hook loads into Far Cry 4 and gives you an in-game menu (F8) with:
 
   CHEATS     God mode, unlimited ammo, infinite magazine, no fall damage, speed boost,
-             fly & noclip, launch, money / XP / skill points, refill ammo, slow motion (adjustable),
+             fly & noclip, launch, money / XP / skill points / karma, refill ammo, FOV and
+             weapon FOV sliders, hide HUD, vehicle speed boost + instant brake, slow motion (adjustable),
              time of day + time lock, storms/blizzard, 5 saved teleport positions,
              "unstick" teleport, unlock safe houses / fast travel / shop / crafting.
              Switches stay on through deaths and loads, and can be remembered between
@@ -39,7 +40,7 @@ INSTALL
         Far Cry 4\bin\winmm.dll          (the ASI loader, see above)
         Far Cry 4\bin\fc4hook.asi
         Far Cry 4\bin\fc4hook\...
-  3. Start the game. A green "FC4Hook v1.1.0 loaded" banner shows at the top left.
+  3. Start the game. A green "FC4Hook v1.3.0 loaded" banner shows at the top left.
      Load a save, then press F8.
 
   Steam default location:  C:\Program Files (x86)\Steam\steamapps\common\Far Cry 4\
@@ -48,7 +49,7 @@ INSTALL
 UPDATING FROM AN OLDER FC4HOOK
 ------------------------------
   Copy over the old files. Your settings, saved positions and co-op tower data are kept.
-  From 1.0.0: nothing to delete.
+  From 1.0.0 / 1.2.x: nothing to delete.
   Old files you can delete:  fc4hook\mods\armory.txt  and these scripts if present:
   armory_test.lua, extract_*.lua, find_weather_presets.lua, autorun\00_hello.lua.
   FC4Hook 1.0 contains no custom weapons. If you use a weapon mod that was made for
@@ -58,6 +59,7 @@ UPDATING FROM AN OLDER FC4HOOK
 USING IT
 --------
   F8                 open/close the menu (change the key in Settings)
+  L3 + R3 (hold)     open/close the menu with a gamepad
   Cheats tab         tick a switch to turn it on; it stays on until you untick it
   Armory tab         "Give" puts the weapon straight in your weapon wheel.
                      Click + to add a favourite. Your own entries: fc4hook\armory\custom.txt

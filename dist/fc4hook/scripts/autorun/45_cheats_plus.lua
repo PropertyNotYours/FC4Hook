@@ -25,7 +25,6 @@ C.natives[#C.natives + 1] = "CAPI_Pawn.SetWeaponAmmoClip"
 C.natives[#C.natives + 1] = "CAPI_Pawn.GetCurrentWeaponCurrentClipAmmo"
 C.natives[#C.natives + 1] = "CAPI_Player.SetLandingDamageEnabled"
 C.natives[#C.natives + 1] = "CAPI_Entity.SetEntityPositionVec3"
-C.natives[#C.natives + 1] = "CAPI_Entity.SetGravity"
 C.natives[#C.natives + 1] = "CAPI_Entity.SetImmuneToCollisions"
 C.natives[#C.natives + 1] = "CAPI_Entity.GetEntityAngles"
 C.natives[#C.natives + 1] = "CAPI_Player.SetPlayerMoney"
@@ -37,7 +36,9 @@ C.natives[#C.natives + 1] = "CAPI_Player.EquipCostume"
 C.natives[#C.natives + 1] = "Game.TeleportToCurrentObjective"
 C.natives[#C.natives + 1] = "CAPI_Weapon.ForceFullAmmoInClip"
 
-C.GRAVITY = -9.81
+-- Fly no longer touches gravity: it resets your position and speed every frame anyway, and
+-- putting gravity "back" afterwards (-9.81) left players with low-gravity jumps (bug report),
+-- because the player's real gravity is stronger.
 
 function C.defaults2()
   local d = { fly_freeze = "0", speedx = "2.0", fly_speed = "12", fly_fast = "40", fly_yaw = "3", fly_yaw_sign = "1",
@@ -151,7 +152,6 @@ function C.flyStart(me)
   if not x then return false end
   C.fly = { x = x, y = y, z = z, t = os.clock() }
   ModSetState("cheat.flying", "1")
-  pcall(CAPI_Entity.SetGravity, me, { 0, 0, 0 })
   local ok, a = pcall(CAPI_Entity.GetEntityAngles, me)
   if ok and type(a) == "table" then ModLog(string.format("Fly: angles %.2f %.2f %.2f", a[1] or 0, a[2] or 0, a[3] or 0)) end
   return true
@@ -160,7 +160,6 @@ end
 function C.flyStop(me)
   C.fly = nil
   ModSetState("cheat.flying", "0")
-  pcall(CAPI_Entity.SetGravity, me, { 0, 0, C.GRAVITY })
   C.flyPose(me, false)
 end
 

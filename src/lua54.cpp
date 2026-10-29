@@ -538,6 +538,51 @@ function fc4._press(id)
   local fn = fc4._buttons()[id]
   if fn then local ok, err = xpcall(fn, debug.traceback) if not ok then fc4.error(tostring(err)) end end
 end
+-- fc4.ui: your own windows in FC4Hook's overlay (see lua\\README.txt)
+do
+  local U = fc4.ui
+  local cbs, kinds = {}, {}
+  local Win = {}; Win.__index = Win
+  local Wid = {}; Wid.__index = Wid
+  function U.window(title, opts)
+    opts = opts or {}
+    return setmetatable({ id = U._window(tostring(title), opts.overlay == true, opts.width or 0, opts.height or 0) }, Win)
+  end
+  local function add(w, kind, label, a, b, c, fn)
+    local id = U._add(w.id, kind, label ~= nil and tostring(label) or "", a, b, c, w._same == true)
+    w._same = nil
+    cbs[id] = fn; kinds[id] = kind
+    return setmetatable({ id = id }, Wid)
+  end
+  function Win:text(s) return add(self, "text", s) end
+  function Win:button(label, fn) return add(self, "button", label, 0, 0, 0, fn) end
+  function Win:checkbox(label, v, fn) return add(self, "checkbox", label, v and 1 or 0, 0, 0, fn) end
+  function Win:slider(label, lo, hi, v, fn) return add(self, "slider", label, lo, hi, v or lo, fn) end
+  function Win:input(label, s, fn) local w = add(self, "input", label, 0, 0, 0, fn); U._set(w.id, s or ""); return w end
+  function Win:combo(label, items, idx, fn)
+    local w = add(self, "combo", label, idx or 1, 0, 0, fn)
+    local t = {} for i, v in ipairs(items or {}) do t[i] = tostring(v) end
+    U._items(w.id, table.concat(t, "\n"))
+    return w
+  end
+  function Win:progress(v, label) return add(self, "progress", label, v or 0) end
+  function Win:separator(label) return add(self, "separator", label) end
+  function Win:same_line() self._same = true return self end
+  function Win:show(v) U._show(self.id, v ~= false) end
+  function Win:hide() U._show(self.id, false) end
+  function Win:close() U._remove(self.id) end
+  function Wid:set(v) U._set(self.id, v) end
+  function Wid:get() return U._get(self.id) end
+  function Wid:on(fn) cbs[self.id] = fn end
+  function U._event(id, v)
+    local fn = cbs[id]
+    if not fn then return end
+    if kinds[id] == "checkbox" then v = v ~= 0 elseif kinds[id] == "combo" then v = math.tointeger(v) or v
+    elseif kinds[id] == "button" then v = nil end
+    local ok, err = xpcall(fn, debug.traceback, v)
+    if not ok then fc4.error("ui callback: " .. tostring(err)) end
+  end
+end
 -- typed memory helpers: mem.u32(addr), mem.f32(addr) ... and mem.read(addr, "u32")
 function mem.read(a, t) return mem[t or "u32"](a) end
 function mem.write(a, t, v) return mem["set_" .. (t or "u32")](a, v) end
@@ -573,6 +618,7 @@ static void OpenApi(lua_State* L) {
     SetFuncs(L, menuf); lua_setfield(L, -2, "menu");
     lua_pushcfunction(L, [](lua_State* L) -> int { lua_getfield(L, LUA_REGISTRYINDEX, "fc4.buttons"); return 1; });
     lua_setfield(L, -2, "_buttons");
+    LuaUiOpen(L);
     lua_setglobal(L, "fc4");
     lua_newtable(L); lua_setfield(L, LUA_REGISTRYINDEX, "fc4.buttons");
 
@@ -624,6 +670,7 @@ static void RunFile(const std::wstring& path, const std::string& chunk) {
 static void StartState() {
     if (S) {
         { std::lock_guard<std::mutex> lk(s_jobMx); s_buttons.clear(); }
+        LuaUiReset();
         lua_close(S);
         S = nullptr;
     }
@@ -686,6 +733,16 @@ void Lua54RunJobs(lua_State* gameL) {
             LogL(LOG_ERROR, "[lua54] %s", lua_tostring(S, -1)); lua_pop(S, 1); continue;
         }
         SafeCall(S, 0, 0, j.chunk.c_str());
+    }
+    for (auto& e : LuaUiTakeEvents()) {
+        lua_getglobal(S, "fc4");
+        lua_getfield(S, -1, "ui");
+        lua_getfield(S, -1, "_event");
+        lua_remove(S, -2); lua_remove(S, -2);
+        if (!lua_isfunction(S, -1)) { lua_pop(S, 1); break; }
+        lua_pushinteger(S, e.id);
+        if (e.isText) lua_pushstring(S, e.text.c_str()); else lua_pushnumber(S, e.num);
+        SafeCall(S, 2, 0, "ui");
     }
     for (int id : pressed) {
         lua_getglobal(S, "fc4"); lua_getfield(S, -1, "_press"); lua_remove(S, -2);

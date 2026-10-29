@@ -1,7 +1,41 @@
+1.3.1
+- FOV override now stays on: the game was resetting it, FC4Hook puts it back.
+- Vehicle speed boost fixed: hold W to accelerate faster, up to the top speed slider.
+
 FC4Hook changelog
 =================
 
-1.1.0 - modding toolkit
+1.3.0 - quality of life + modder UI
+  Cheats
+    - FOV slider (past the game's menu limit) and a separate weapon FOV slider, using the
+      game's own FOV override (aiming and cutscenes still work); applied again after loads
+    - Hide HUD switch (+ hotkey)
+    - Karma: shows your karma level and points, Give karma button
+    - Vehicles: speed boost (faster acceleration up to a top speed you choose) and instant
+      brake (+ hotkey)
+    - Fixed (1.2.1): the Fly switch could be greyed out
+  Mods tab
+    - "Loose files in use": every loose file with the mod it comes from, search, "only
+      conflicts", and which other mods shipped the same file but lost on load order;
+      "Check against game files" shows whether each file replaces a game file or is new
+  Gamepad
+    - The F8 menu works with a controller: hold L3 + R3 for half a second to open/close it,
+      D-pad / stick to move, A to press, B to go back. The game doesn't get the pad while
+      the menu is open (Settings: GamepadMenu)
+  Lua 5.4
+    - fc4.ui: scripts make their own windows in FC4Hook's overlay (text, buttons, checkboxes,
+      sliders, text boxes, combos, progress bars), plus overlay windows that stay on screen
+      with the menu closed. See lua\README.txt and lua\examples\ui_demo.lua
+
+1.2.1 - bug fixes
+  - The game no longer gets keyboard and mouse input while the F8 menu is open (it reads
+    both through DirectInput, so they went "through" the menu). Key and button releases still
+    reach it, so nothing stays held when you close the menu
+  - Fly / noclip: Shift (fast fly) no longer opens the wingsuit
+  - Fly: no more low-gravity jumps after flying (fly doesn't change your gravity any more)
+  - Attachments: fitting a suppressor no longer leaves the gun's firing sound looping
+
+1.2.0 - modding toolkit
   Loose-file mods
     - fc4hook\mods\<Mod>\files\... : put game files at their in-game path and the game loads
       them instead of its own; new paths work too (new archetypes, textures, animation
@@ -31,6 +65,9 @@ FC4Hook changelog
       (weapons from the Armory list, props, vehicles, NPCs, your own archetypes); remove them
     - Animation: attach/detach animation packages, play / force-play animations by path on
       you or on what you spawned, StartPlayAnim/StopPlayAnim, show the current animation
+    - Clip monitor (Animation tab): lists every animation clip the moment the game starts
+      playing it (hooked at the Move graph's clip node), newest first, with its labels and
+      Replace / With buttons for the swap tool
     - Animation state browser: 540 of the game's Move-graph states (holster, draw, takedowns,
       cover, swimming...) and animation packages, searchable, one click to play/attach;
       also picks up every new name your File log records

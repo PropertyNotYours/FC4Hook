@@ -299,7 +299,7 @@ static void TabCheats() {
     CheatSwitch("Vehicle speed boost", "vboost", "CAPI_Vehicle.SetVehicleSpeed", "While you hold the throttle (W / right trigger) your vehicle speeds up faster, up to the top speed below. Let go or brake and it drives normally.");
     ImGui::SameLine(ImGui::GetFontSize() * 14);
     CfgSlider("##vboostx", "cheat.vboostx", "2", 1.25f, 6.0f, "%.2fx acceleration", "FC4Cheats.setVehicleCfg('vboostx', %.2f)");
-    CfgSlider("top speed", "cheat.vmax", "250", 80, 600, "%.0f km/h", "FC4Cheats.setVehicleCfg('vmax', %.0f)");
+    CfgSlider("top speed", "cheat.vmax", "250", 80, 2000, "%.0f km/h", "FC4Cheats.setVehicleCfg('vmax', %.0f)");
     ImGui::SameLine();
     if (ActionButton("Instant brake", "CAPI_Vehicle.SetVehicleSpeed")) Lua("FC4Cheats.brake()", "=cheats");
     Help("Stops your vehicle dead. Bind a hotkey for it in Settings.");
@@ -382,21 +382,59 @@ static void TabCheats() {
 
     ImGui::SeparatorText("Saved positions");
     ImGui::BeginDisabled(!LuaReady() || !Avail("teleport"));
+    
+    // 1. Read coordinates directly from disk to bypass memory state bridge issues
+    std::map<int, std::string> diskPositions;
+    std::wstring filePath = g_rootDir + L"positions.txt";
+    FILE* posFile = _wfopen(filePath.c_str(), L"r");
+    if (posFile) {
+        char line[256];
+        while (fgets(line, sizeof(line), posFile)) {
+            int slotNum = 0;
+            float fx = 0, fy = 0, fz = 0;
+            // Parses the exact file format: slot1.000000=X,Y,Z
+            if (sscanf(line, "slot%d.000000=%f,%f,%f", &slotNum, &fx, &fy, &fz) == 4) {
+                char coordBuf[128];
+                snprintf(coordBuf, sizeof(coordBuf), "%.2f,%.2f,%.2f", fx, fy, fz);
+                diskPositions[slotNum] = coordBuf;
+            }
+        }
+        fclose(posFile);
+    }
+
     for (int i = 1; i <= 5; ++i) {
         ImGui::PushID(i);
-        std::string pos = GetState("pos." + std::to_string(i));
-        char lbl[24];
-        if (ImGui::Button("Save here")) { snprintf(lbl, sizeof(lbl), "FC4Cheats.savePos(%d)", i); Lua(lbl, "=cheats"); }
+        
+        char lbl[64];
+        if (ImGui::Button("Save here")) { 
+            snprintf(lbl, sizeof(lbl), "FC4Cheats.savePos(%d)", i); 
+            Lua(lbl, "=cheats"); 
+        }
         ImGui::SameLine();
-        ImGui::BeginDisabled(pos.empty());
-        if (ImGui::Button("Go")) { snprintf(lbl, sizeof(lbl), "FC4Cheats.loadPos(%d)", i); Lua(lbl, "=cheats"); }
+        
+        // Check if this slot integer exists inside our file dictionary
+        bool hasData = (diskPositions.count(i) > 0);
+        
+        ImGui::BeginDisabled(!hasData);
+        if (ImGui::Button("Go")) { 
+            snprintf(lbl, sizeof(lbl), "FC4Cheats.loadPos(%d)", i); 
+            Lua(lbl, "=cheats"); 
+        }
         ImGui::SameLine();
-        if (ImGui::Button("Clear")) { snprintf(lbl, sizeof(lbl), "FC4Cheats.clearPos(%d)", i); Lua(lbl, "=cheats"); }
+        if (ImGui::Button("Clear")) { 
+            snprintf(lbl, sizeof(lbl), "FC4Cheats.clearPos(%d)", i); 
+            Lua(lbl, "=cheats"); 
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
+        
         float x = 0, y = 0, z = 0;
-        if (!pos.empty() && sscanf(pos.c_str(), "%f,%f,%f", &x, &y, &z) == 3) ImGui::Text("Slot %d   x %6.0f   y %6.0f   height %4.0f", i, x, y, z);
-        else ImGui::TextDisabled("Slot %d   (empty)", i);
+        if (hasData && sscanf(diskPositions[i].c_str(), "%f,%f,%f", &x, &y, &z) == 3) {
+            ImGui::Text("Slot %d   x %6.0f   y %6.0f   height %4.0f", i, x, y, z);
+        }
+        else {
+            ImGui::TextDisabled("Slot %d   (empty)", i);
+        }
         ImGui::PopID();
     }
     ImGui::EndDisabled();

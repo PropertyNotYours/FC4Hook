@@ -1,9 +1,98 @@
-1.3.1
-- FOV override now stays on: the game was resetting it, FC4Hook puts it back.
-- Vehicle speed boost fixed: hold W to accelerate faster, up to the top speed slider.
-
 FC4Hook changelog
 =================
+
+1.6.0 - custom models
+  - .obj -> .xbg: make a weapon (or any) model your own. Edit the game's model in Blender
+    (move/scale/rotate vertices), export .obj, and FC4Hook writes your shape into the game's
+    model, keeping its UVs, normals, skinning and materials. Checks the .obj really lines up
+    with the model first and refuses (with the reason) if it doesn't
+  - Workshop > Model: "Use my .obj" converts it and points the weapon at the new model in one
+    click
+  - F8 > Developer > Models: convert an .obj to replace a model everywhere in the game
+  - tools\fc4mdl.exe: the same converter outside the game (drag the .xbg and .obj onto it)
+
+1.5.2
+  - Workshop: fire rate was shown (and would have been saved) as a huge number: the game
+    stores it as a decimal despite its name. Ammo used per shot shows as a plain number
+  - Workshop weapons are registered with the game automatically as the world loads (retries
+    until the game's weapon table is ready), not only on the first Give
+
+1.5.1
+  - Fixed: "Give it to me" on a Workshop weapon crashed the game. A new weapon's properties
+    archetype isn't loaded at startup like the game's own, and the game expects it to be.
+    FC4Hook now loads every Workshop weapon's properties and pickup as soon as you're in the
+    world, and any give (Workshop or Armory tab) waits until they're in.
+  - Fixed: Workshop weapons couldn't be given and their pickups couldn't be taken. The game
+    doesn't read a weapon's properties from the weapon itself: it looks them up in a table it
+    builds at startup from entitylibraryNamesToResId.fcb, which only has the game's weapons.
+    FC4Hook now adds every Workshop weapon to that table when you enter the world and before
+    every give (Workshop tab shows "Game registration: ...")
+  - Safety net: if the game is ever about to add a weapon whose properties aren't loaded, it's
+    skipped with a warning in the log instead of crashing
+  - F8 > Developer > Models: extract any .xbg model with its materials and textures (+ .dds
+    copies) to dumps\extracted: type its path, give an archetype id (e.g. a weapon) to get every
+    model it uses, or pick from the models the File log has seen. The Workshop's Model tab has
+    an "Extract it" button for the weapon's current models
+
+1.5.0 - Weapon Workshop
+  - New F8 > Workshop tab: make a new weapon from any weapon in the game in one click. FC4Hook
+    copies its item, properties and pickup archetypes into a new mod with new ids (links,
+    internal paths and path hashes all rewritten), gives it a unique name, adds it to the
+    Armory. No FCB converter needed
+  - Stats editor: fire rate, magazine size, reload times, range, recoil, move speed, silent,
+    infinite ammo and more, with the original weapon's value next to each one; or every
+    value in the weapon, under the game's own field names
+  - Model editor: point a weapon's first/third-person model at your own .xbg (or any model in
+    the game); warns when the file isn't there yet
+  - FC4Hook can now read the game's binary .fcb files itself and names their fields from
+    FC64.dll (about 57,000 names), the base for more editors to come
+
+1.4.4 - custom archetypes
+  - Spawner: "Check an archetype (why won't it spawn?)". Type an id or check every archetype
+    your mods add: shows where the file comes from and points out the usual mistakes in plain
+    words: file not found / wrong name, still XML instead of binary .fcb, the id inside the
+    file doesn't match its file name (copied archetypes), models/textures/materials it uses
+    that don't exist, missing weapon properties or pickup archetype
+  - Fixed: weapon pickups and archetype lookups only searched the game's own archives, so
+    archetypes added by a mod were never found (custom weapons always spawned as a bare model)
+  - mods\README.txt: step-by-step checklist for making a new archetype
+
+1.4.3
+  - Spawner: things spawn as soon as they've loaded. Each spawn now waits for its own archetype
+    (checked every 0.1 s) instead of queueing behind a slow one, so no more pile-ups
+
+1.4.2
+  - Fixed: the menu went blank when opening the spawner's People / Animals / Vehicles list
+
+1.4.1
+  - Spawner is now its own tab, next to Travel (no developer mode needed)
+  - Spawner catalog sorted into plain categories (People, Animals, Vehicles, Weapons,
+    Pickups & collectibles, Props, Technical) with groups like Villagers, Predators & big
+    game, Land / Water / Air, Weapon pickups, Furniture & clutter...; readable names; the
+    search looks through every category; mission/multiplayer/test variants hidden unless you
+    tick "variants"; "game names" shows the raw archetype paths
+  - Fixed: catalog names had stray characters in front ("nCfcc_graphics", "n:fcc_vehicles"),
+    which split one library into dozens. Old archetypes.txt files are cleaned when loaded
+
+1.4.0 - spawner, slow-motion sound, fixes
+  Spawner
+    - Weapons spawn as real pickups you can walk up to and take (FC4Hook finds each weapon's
+      pickup archetype in the game data). "Model only" still spawns the bare model
+    - New "NPCs, animals, vehicles..." list: Build catalog once and FC4Hook lists every
+      archetype in the game, by library, with a search box and a Spawn button
+  Cheats
+    - Slow motion now slows the sound too (option "Slow the sound too")
+    - FOV: no more glitch when aiming. The override is held every frame, and while you aim
+      (right mouse / left trigger) the game's own ironsight and scope zoom take over
+    - Vehicle boost: higher top speed (the boost keeps its own target speed instead of being
+      pulled back by the game every frame); the right trigger works as throttle
+    - Teleport position slots read from positions.txt (thanks Seth)
+  Lua (game scripts)
+    - ModPadTrigger("left"|"right") -> 0..1, ModSetAudioSpeed(f), ModArchetypeRef(id, field)
+
+1.3.1
+  - FOV override stays on (the game kept resetting it)
+  - Vehicle speed boost: hold W to accelerate faster
 
 1.3.0 - quality of life + modder UI
   Cheats

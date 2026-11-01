@@ -329,6 +329,28 @@ std::vector<VfsModEntry> VfsMods() {
     return r;
 }
 
+// Read file `id` the way the game will see it: a loose mod's file first, then the game's
+// archives. *from = "mod <name>: <path>" or the archive name.
+bool AnyFileRead(uint64_t id, std::vector<uint8_t>& out, std::string* err, std::string* from) {
+    std::wstring src; std::string where;
+    {
+        std::lock_guard<std::mutex> lk(s_vfsMx);
+        auto it = s_files.find(id);
+        if (it != s_files.end()) { src = it->second.src; where = "mod " + it->second.mod + ": " + it->second.rel; }
+    }
+    if (!src.empty()) {
+        FILE* f = _wfopen(src.c_str(), L"rb");
+        if (!f) { if (err) *err = "can't open " + Narrow(src); return false; }
+        out.clear(); uint8_t b[65536]; size_t n;
+        while ((n = fread(b, 1, sizeof(b), f)) > 0) out.insert(out.end(), b, b + n);
+        fclose(f);
+        if (from) *from = where;
+        return true;
+    }
+    std::string e;
+    return GameFileRead(id, out, err ? err : &e, from);
+}
+
 // game path (as written in the mod) supplied by a loose mod for this id, or ""
 static std::string LooseNameFor(uint64_t id) {
     std::lock_guard<std::mutex> lk(s_vfsMx);

@@ -836,6 +836,39 @@ static int L_ModKeyDown(lua_State* L) {
     return ReturnLua(L, (GetAsyncKeyState(vk) & 0x8000) ? "true" : "false");
 }
 
+// ModPadTrigger("left" | "right") -> 0..1, how far that gamepad trigger is pressed (0 with
+// no pad, when the game isn't focused or while the menu is open).
+static int L_ModPadTrigger(lua_State* L) {
+    const char* s = ArgStr(L, 1);
+    int lt = 0, rt = 0;
+    if (!GameHasFocus() || g_menuOpen || !PadTriggers(0, &lt, &rt)) return ReturnLua(L, "0");
+    int v = (s && s[0] == 'l') ? lt : rt;
+    char b[32]; snprintf(b, sizeof(b), "%.3f", v / 255.0);
+    return ReturnLua(L, b);
+}
+
+// ModSetAudioSpeed(f): play all game sound at f x speed (0.05 .. 1), for slow motion.
+static int L_ModSetAudioSpeed(lua_State* L) {
+    const char* s = ArgStr(L, 1);
+    AudioSetSpeed(s ? (float)atof(s) : 1.f);
+    return 0;
+}
+
+// ModArchetypeRef("archetypeId", "arkPickupArchetype" | "#hash") -> "id" or nil
+static int L_ModArchetypeRef(lua_State* L) {
+    const char* a = ArgStr(L, 1); const char* f = ArgStr(L, 2);
+    if (!a || !f) return ReturnLua(L, "nil");
+    uint64_t v = ArchetypeRefField(strtoull(a, nullptr, 10), f);
+    if (!v || v == ~0ull) return ReturnLua(L, "nil");
+    char b[32]; snprintf(b, sizeof(b), "\"%llu\"", (unsigned long long)v);
+    return ReturnLua(L, b);
+}
+
+// ModWorkshopRegister() -> number of Workshop weapons the game now knows (registers missing ones)
+static int L_ModWorkshopRegister(lua_State* L) { char b[16]; snprintf(b, sizeof(b), "%d", WorkshopRegister()); return ReturnLua(L, b); }
+// ModWorkshopList() -> "item,props,pickup;..." of every Workshop weapon (mods\*\workshop.txt)
+static int L_ModWorkshopList(lua_State* L) { return ReturnLua(L, Quote(WorkshopIdList())); }
+
 // ---- small Lua helpers shared with memory.cpp ---------------------------
 int         LuaTop(lua_State* L) { return my_gettop(L); }
 const char* LuaArg(lua_State* L, int i) { return ArgStr(L, i); }
@@ -855,7 +888,7 @@ void* EntityObject(lua_State* L, uint64_t id) {
 static void RegisterBuiltins(lua_State* L) {
     struct { const char* n; lua_CFunction f; } fns[] = {
         { "ModLog", L_ModLog }, { "ModLogDebug", L_ModLogDebug }, { "ModLogWarn", L_ModLogWarn }, { "ModLogError", L_ModLogError },
-        { "ModSetState", L_ModSetState }, { "ModKeyDown", L_ModKeyDown }, { "ModGetState", L_ModGetState }, { "ModVersion", L_ModVersion }, { "ModFileExists", L_ModFileExists },
+        { "ModSetState", L_ModSetState }, { "ModKeyDown", L_ModKeyDown }, { "ModPadTrigger", L_ModPadTrigger }, { "ModSetAudioSpeed", L_ModSetAudioSpeed }, { "ModArchetypeRef", L_ModArchetypeRef }, { "ModWorkshopList", L_ModWorkshopList }, { "ModWorkshopRegister", L_ModWorkshopRegister }, { "ModGetState", L_ModGetState }, { "ModVersion", L_ModVersion }, { "ModFileExists", L_ModFileExists },
         { "ModWriteFile", L_ModWriteFile }, { "ModReadFile", L_ModReadFile }, { "ModCopyArchiveRange", L_ModCopyArchiveRange }, { "ModDumpStrings", L_ModDumpStrings },
         { "ModNativeAddress", L_ModNativeAddress }, { "ModGetUnlockedTowers", L_ModGetUnlockedTowers },
         { "ModGrantTowerRewards", L_ModGrantTowerRewards }, { "ModTowerRewardKeys", L_ModTowerRewardKeys },
@@ -1266,6 +1299,7 @@ bool GameInit() {
     RegisterLuaFunction("ModLooseStatus", L_ModLooseStatus);
     RegisterLuaFunction("ModFileLog", L_ModFileLog);
     FileLogInstall();
+    WorkshopInstallGuard();
     ClipMonitorInstall();
     if (FileLogAtStartup() && FileLogAvailable()) FileLogSetEnabled(true);
     uintptr_t fc64 = FC64Base();

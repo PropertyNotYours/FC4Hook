@@ -25,7 +25,8 @@ for f in src/*.cpp; do
 for p in "${pids[@]}"; do wait $p; done
 
 $ZIG c++ -target x86_64-windows-gnu -shared -s -o $OUT/fc4hook.asi "${objs[@]}" \
-  -ld3d11 -ldxgi -ld3dcompiler_47 -ldwmapi -lgdi32 -luser32 -lshell32 -lpsapi
+  -ld3d11 -ldxgi -ld3dcompiler_47 -ldwmapi -lgdi32 -luser32 -lshell32 -lpsapi -lole32
 $ZIG c++ -target x86_64-windows-gnu -O2 -shared -s -Iinclude -Iexternal/imgui -o $OUT/example_plugin.dll examples/example_plugin.cpp
 $ZIG c++ -target x86_64-windows-gnu -O2 -s -std=c++17 -static -o $OUT/fc4tex.exe tools/fc4tex.cpp src/texconv.cpp
+$ZIG c++ -target x86_64-windows-gnu -O2 -s -std=c++17 -static -o $OUT/fc4mdl.exe tools/fc4mdl.cpp src/xbgpatch.cpp
 ls -la $OUT/*.asi $OUT/*.dll $OUT/*.exe

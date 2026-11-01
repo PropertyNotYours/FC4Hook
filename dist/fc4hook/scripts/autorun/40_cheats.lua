@@ -29,6 +29,7 @@ function C.load()
   C.cfg = FC4.loadKV(C.file)
   C.cfg.remember = C.cfg.remember or "1"
   C.cfg.slow = C.cfg.slow or "0.3"
+  C.cfg.slow_audio = C.cfg.slow_audio or "1"
   C.cfg.hour = C.cfg.hour or "12"
   C.cfg.minute = C.cfg.minute or "0"
   C.on = C.on or {}
@@ -52,6 +53,7 @@ function C.publish()
   end
   ModSetState("cheat.remember", C.cfg.remember)
   ModSetState("cheat.slow", C.cfg.slow)
+  ModSetState("cheat.slow_audio", C.cfg.slow_audio)
   ModSetState("cheat.hour", C.cfg.hour)
   ModSetState("cheat.minute", C.cfg.minute)
 end
@@ -79,9 +81,26 @@ function C.applyAmmo(v)
   return FC4.call("EnableUnlimitedAmmo", v == true)
 end
 
+-- The game's slow motion doesn't touch sound; FC4Hook slows the audio itself (slow_audio=1).
+function C.slowAudio(f)
+  if ModSetAudioSpeed then pcall(ModSetAudioSpeed, f) end
+end
+
 function C.applySlow(v)
-  if v then return FC4.call("SetSlowMotion", tonumber(C.cfg.slow) or 0.3) end
+  if v then
+    local f = tonumber(C.cfg.slow) or 0.3
+    C.slowAudio(C.cfg.slow_audio == "0" and 1 or f)
+    return FC4.call("SetSlowMotion", f)
+  end
+  C.slowAudio(1)
   return FC4.call("SetSlowMotion", 1.0)
+end
+
+function C.setSlowAudio(on)
+  C.cfg.slow_audio = on and "1" or "0"
+  C.save()
+  ModSetState("cheat.slow_audio", C.cfg.slow_audio)
+  if C.isOn("slowmo") then C.applySlow(true) end
 end
 
 function C.applyTime()

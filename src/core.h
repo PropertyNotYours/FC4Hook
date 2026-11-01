@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.3.1"
+#define FC4HOOK_VERSION      "1.6.0"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -97,6 +97,35 @@ struct VfsModEntry { std::string name; int files; bool enabled; bool hasFiles; }
 std::vector<VfsModEntry> VfsMods();
 struct VfsFileEntry { uint64_t id; std::string rel, mod; uint64_t size; std::vector<std::string> beaten; };
 std::vector<VfsFileEntry> VfsFiles();
+void ArchetypeCatalogBuild();             // extract.cpp: scan the archives -> fc4hook\archetypes.txt
+std::string ArchetypeCatalogStatus();
+uint64_t ArchetypeRefField(uint64_t id, const char* field);   // archetype reference field, 0 = none
+bool AnyFileRead(uint64_t id, std::vector<uint8_t>& out, std::string* err, std::string* from);  // vfs.cpp: loose mods first
+std::string ArchetypeCheck(uint64_t id);   // extract.cpp: human-readable diagnosis of an archetype
+std::string ArchetypeCheckMods();          // every archetype the enabled mods add or replace
+// fcb.cpp: binary FCB files (archetypes etc.)
+struct FcbValue { uint32_t hash = 0; std::string name, object; uint32_t offset = 0, size = 0; int depth = 0; bool shared = false; };
+uint32_t FcbHash(const char* name);
+std::string FcbName(uint32_t hash);                 // the game's own field name (from FC64.dll)
+bool FcbParse(const std::vector<uint8_t>& d, std::vector<FcbValue>& out, std::string* err);
+int FcbReplaceU64(std::vector<uint8_t>& d, uint64_t from, uint64_t to);
+int FcbReplaceText(std::vector<uint8_t>& d, const std::string& from, const std::string& to);
+std::string FcbFormat(const std::vector<uint8_t>& d, const FcbValue& v);
+char FcbKind(const FcbValue& v);
+char FcbKindOf(const std::vector<uint8_t>& d, const FcbValue& v);
+// workshop.cpp: Weapon Workshop
+struct WeaponChain { uint64_t item = 0, props = 0, pickup = 0; };
+struct WorkshopWeapon { std::string mod, name; uint64_t base = 0; uint64_t ids[3] = {}; };
+bool WeaponChainOf(uint64_t item, WeaponChain* c);
+void WorkshopInstallGuard();
+std::string WorkshopIdList();
+int WorkshopRegister();                  // add Workshop weapons to the game's weapon -> properties map
+std::string WorkshopRegisterStatus();
+bool WorkshopCreate(uint64_t baseItem, const std::string& displayName, std::string* modOut, std::string* msg);
+std::vector<WorkshopWeapon> WorkshopList();
+bool WorkshopRead(const WorkshopWeapon& w, int part, std::vector<uint8_t>& d, std::vector<FcbValue>& vals, std::string* err);
+bool WorkshopReadBase(const WorkshopWeapon& w, int part, std::vector<uint8_t>& d);
+bool WorkshopSet(const WorkshopWeapon& w, int part, uint32_t offset, char kind, const std::string& text, std::string* err);
 bool GameFileExists(uint64_t id);         // extract.cpp: indexes the game's archives on first use
 bool VfsModEnabled(const std::string& name);
 void VfsSetModEnabled(const std::string& name, bool on);   // takes effect next start
@@ -129,6 +158,11 @@ std::vector<std::string> FileLogRecent(const std::string& filter, size_t max);
 bool Lzo1xDecompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen, size_t* got);
 bool GameFileRead(uint64_t id, std::vector<uint8_t>& out, std::string* err, std::string* from);
 bool ExtractGameFile(uint64_t id, const std::string& path, std::string* msg);
+bool ExtractModel(const std::string& path, std::string* msg);
+bool XbgFromObj(std::vector<uint8_t>& xbg, const std::string& objText, std::string* report);   // xbgpatch.cpp
+// Edited .obj -> .xbg: the original model is read from the game (or a mod), patched, written to outFile.
+bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFile, const std::wstring& outFile, std::string* msg);      // .xbg + its materials + textures
+std::vector<std::string> ArchetypeModels(uint64_t id);             // .xbg paths an archetype uses
 void RunExtractJob(std::function<void()> job);
 bool TextureToDds(const std::string& rel, std::string* msg);    // dumps\extracted\<rel>.xbt -> .dds
 int  InstallEditedTextures(std::string* msg);                   // edited .dds -> mods\MyTextures
@@ -190,8 +224,13 @@ bool        MemWriteValue(uintptr_t a, const char* type, const char* value, std:
 
 // ---- overlay / plugins -----------------------------------------------------
 bool OverlayInit();
+bool AudioInit();                                // XAudio2 hooks for slow-motion sound (audio.cpp)
+void AudioSetSpeed(float speed);
+float AudioGetSpeed();
+int AudioVoiceCount();
 bool InputInit();                                // DirectInput keyboard filter (input.cpp)
 void PadPassThrough(bool on);                    // this thread reads the real pad (menu)
+bool PadTriggers(int user, int* lt, int* rt);    // real XInput triggers 0..255
 bool PadRead(int user, uint16_t* buttons);       // real XInput buttons, for the menu combo
 void AddMenuCallback(void (*cb)());
 void AddPresentCallback(void (*cb)(void* swapChain));

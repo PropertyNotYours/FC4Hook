@@ -15,7 +15,7 @@
 --   CAPI_Pawn.PlayAnimation(pawn, path, layer, loop) / ForcePlayAnimation(...)
 --   CAPI_Player.StartPlayAnim(player, name, b1, b2) -> ok / StopPlayAnim(player)
 --   CAPI_Pawn.GetCurrentAnimName(pawn, layer) -> name
--- Lua:  FC4Spawn.spawn("7602852352217")  FC4Spawn.removeAll()
+-- Lua:  FC4Spawn.spawn("7602852352217")  FC4Spawn.spawnPickup("7602852352217")  FC4Spawn.removeAll()
 --       FC4Anim.play("me", "path", 0, false)   FC4Anim.attach("last", "path")
 
 FC4Spawn = FC4Spawn or {}
@@ -67,22 +67,61 @@ function S.spawn(id, name)
   S.publish("spawning " .. job.name .. "...")
 end
 
+-- Weapons: the armory id is the weapon item itself (spawns as a model you can't take). Its
+-- WeaponProperties archetype names the pickup: weapon --(#dd5d4f7d)--> properties
+-- --(arkPickupArchetype)--> pickup. Some weapon ids point at the pickup field directly.
+S.PROPS_FIELD = "#dd5d4f7d"
+function S.pickupFor(id)
+  if type(ModArchetypeRef) ~= "function" then return nil end
+  local ok, p = pcall(ModArchetypeRef, id, "arkPickupArchetype")
+  if ok and p then return p end
+  local ok2, props = pcall(ModArchetypeRef, id, S.PROPS_FIELD)
+  if ok2 and props then
+    local ok3, p2 = pcall(ModArchetypeRef, props, "arkPickupArchetype")
+    if ok3 and p2 then return p2 end
+  end
+  return nil
+end
+
+function S.spawnPickup(id, name)
+  local p = S.pickupFor(tostring(id))
+  if p then
+    ModLog("Spawner: " .. tostring(name or id) .. " -> pickup archetype " .. p)
+    return S.spawn(p, (name or tostring(id)) .. " (pickup)")
+  end
+  ModLogWarn("Spawner: no pickup archetype found for " .. tostring(id) .. ", spawning the model")
+  S.spawn(id, name)
+  S.publish("no pickup found for " .. tostring(name or id) .. ": spawned the model only")
+end
+
+-- Each queued spawn retries on its own (every 0.1 s, for up to 10 s) while the game loads
+-- its archetype, so one slow archetype never holds up the others.
+S.RETRY = 0.1
+S.TIMEOUT = 10
+
 function S.step(job, now)
   if S.try(job) then return true end
-  job.tries = job.tries + 1
-  job.at = now + 0.5
-  if job.tries < 16 then return false end
-  S.publish("gave up: archetype " .. job.id .. " didn't load (wrong id, or its files are missing)")
+  job.first = job.first or now
+  job.at = now + S.RETRY
+  if now - job.first < S.TIMEOUT then return false end
+  S.publish("gave up: " .. job.name .. " didn't load (wrong id, or its files are missing)")
   ModLogWarn("Spawner: archetype " .. job.id .. " never loaded")
   return true
 end
 
 function S.tick()
-  local job = S.queue[1]
-  if not job then return end
+  if #S.queue == 0 then return end
   local now = os.clock()
-  if now < job.at then return end
-  if S.step(job, now) then table.remove(S.queue, 1) end
+  local keep = {}
+  for _, job in ipairs(S.queue) do
+    if now < job.at or not S.step(job, now) then keep[#keep + 1] = job end
+  end
+  S.queue = keep
+  ModSetState("spawn.pending", tostring(#keep))
+  if #keep > 0 then
+    local w = keep[1]
+    ModSetState("spawn.status", "loading " .. w.name .. (#keep > 1 and (" (+" .. (#keep - 1) .. " more)") or "") .. "...")
+  end
 end
 
 function S.remove(id)

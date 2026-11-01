@@ -116,22 +116,29 @@ end
 function C.throttle()
   if ModKeyDown(83) then return false end                 -- S: braking / reversing
   if ModKeyDown(87) then return true end                  -- W
-  local ok, rt = pcall(function() return FC4.padTrigger and FC4.padTrigger("right") end)
-  return ok and type(rt) == "number" and rt > 0.3
+  local ok, lt = pcall(ModPadTrigger, "left")
+  if ok and (tonumber(lt) or 0) > 0.3 then return false end    -- left trigger: brake / reverse
+  local ok2, rt = pcall(ModPadTrigger, "right")
+  return ok2 and (tonumber(rt) or 0) > 0.3
 end
 
+-- The boost keeps its own target speed instead of adding to what the game reports: the game
+-- pulls the car back towards the vehicle's own top speed every frame, which used to cancel the
+-- boost out there. Crash or slow down hard and the target drops back to the real speed.
 function C.vboostTick(me)
   local now = os.clock()
   local dt = C.vtime and math.min(now - C.vtime, 0.1) or 0
   C.vtime = now
   local v = C.vehicle(me)
   local s = v and C.vspeed(v)
-  if not s or s < 3 or dt <= 0 or not C.throttle() then return end
+  if not s or s < 3 or dt <= 0 or not C.throttle() then C.vtarget = nil return end
   local vmax = tonumber(C.cfg.vmax) or 250
-  if s >= vmax then return end
+  local t = C.vtarget
+  if not t or s > t or s < t * 0.5 then t = s end
   local k = (tonumber(C.cfg.vboostx) or 2) - 1
-  local new = math.min(s + k * 25 * dt, vmax)
-  if new > s then pcall(CAPI_Vehicle.SetVehicleSpeed, v, new) end
+  t = math.min(t + k * 25 * dt, vmax)
+  C.vtarget = t
+  if t > s then pcall(CAPI_Vehicle.SetVehicleSpeed, v, t) end
 end
 
 function C.brake()
@@ -153,7 +160,7 @@ end
 C.appliers.fov = function(v) return C.fovApply("fov", v == true) end
 C.appliers.fovnear = function(v) return C.fovApply("fovnear", v == true) end
 C.appliers.hud = function(v) return C.hudApply(v == true) end
-C.appliers.vboost = function() C.vtime = nil return true end
+C.appliers.vboost = function() C.vtime = nil C.vtarget = nil return true end
 
 -- FOV/HUD switches go back on when you enter the world (after a load); vehicle boost every frame.
 function C.tick3()
@@ -172,26 +179,37 @@ function C.tick3()
   C.fovKeep()
 end
 
--- The game sets its own FOV again (aiming, vehicles, cutscenes...). Once a second, if the
--- camera isn't at our FOV any more, put the override back.
+-- Many camera modes drop the override, so it's held every frame (no blend: each call restarts
+-- the game's blend timer). While you aim (right mouse / left trigger) it's released so the
+-- game's own ironsight / scope zoom works, then blended back in when you stop aiming.
+function C.aiming()
+  if ModKeyDown(2) then return true end                       -- right mouse button
+  local ok, lt = pcall(ModPadTrigger, "left")
+  return ok and (tonumber(lt) or 0) > 0.3
+end
+
 function C.fovKeep()
+  if not (C.on.fov or C.on.fovnear) then C.fovAim = nil return end
+  local me = FC4.me()
   local now = os.clock()
-  if C.fovNext and now < C.fovNext then return end
-  C.fovNext = now + 1
+  local aim = C.aiming()
   for _, k in ipairs({ "fov", "fovnear" }) do
     if C.on[k] then
+      local f = FC4.fn(C.fovFn(k))
       local want = tonumber(C.cfg[k == "fov" and "fov" or "fov_near"]) or 90
-      local cur
-      if k == "fov" then
-        local ok, v = pcall(CAPI_Player.GetPlayerFOV, FC4.me())
-        if ok and type(v) == "number" then cur = v < 4 and math.deg(v) or v end
-      end
-      if cur == nil or math.abs(cur - want) > 1 then
-        local f = FC4.fn(C.fovFn(k))
-        if f then pcall(f, FC4.me(), want, 0.1, true) end
+      if f then
+        if aim then
+          if not C.fovAim then pcall(f, me, 0, 0.15, false) end          -- hand over to the game
+        elseif C.fovAim then
+          pcall(f, me, want, 0.2, true)                                -- stopped aiming: blend back
+          C.fovHold = now + 0.25
+        elseif not C.fovHold or now >= C.fovHold then
+          pcall(f, me, want, 0, true)
+        end
       end
     end
   end
+  C.fovAim = aim or nil
 end
 
 function C.publish3()

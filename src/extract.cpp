@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <functional>
 #include <cstring>
+#include <atomic>
 
 namespace fc4 {
 
@@ -279,6 +280,82 @@ bool ExtractGameFile(uint64_t id, const std::string& path, std::string* msg) {
     return true;
 }
 
+// ------------------------------------------------------------------ models
+// Game paths with one of `exts` written inside a file (printable strings; a length byte stuck to
+// the front is dropped).
+static std::vector<std::string> PathsIn(const std::vector<uint8_t>& d, const std::vector<std::string>& exts) {
+    std::vector<std::string> r; std::set<std::string> seen; std::string cur;
+    for (size_t i = 0; i <= d.size(); ++i) {
+        char c = i < d.size() ? (char)d[i] : 0;
+        if (c >= 0x20 && c < 0x7f) { cur += c; continue; }
+        if (cur.size() >= 5 && (cur.find('\\') != std::string::npos || cur.find('/') != std::string::npos)) {
+            for (size_t j = 0; j < 3 && j < cur.size(); ++j) if ((unsigned char)cur[j] == cur.size() - j) { cur = cur.substr(j + 1); break; }
+            std::string l = LowerA(cur);
+            size_t b = l.find("graphics");
+            if (b == std::string::npos) b = l.find_first_not_of("{*)\"' ");
+            if (b != std::string::npos) l = l.substr(b);
+            for (auto& c2 : l) if (c2 == '/') c2 = '\\';
+            for (auto& e : exts)
+                if (l.size() > e.size() && l.compare(l.size() - e.size(), e.size(), e) == 0 && seen.insert(l).second) { r.push_back(l); break; }
+        }
+        cur.clear();
+    }
+    return r;
+}
+
+// Extract a model (.xbg) with everything it needs: its materials (.material.bin) and their
+// textures (.xbt, + .dds copies to view/edit). Everything lands in dumps\extracted\<game path>.
+bool ExtractModel(const std::string& path, std::string* msg) {
+    std::string p = LowerA(path);
+    for (auto& c : p) if (c == '/') c = '\\';
+    std::string m1;
+    if (!ExtractGameFile(FileId(p.c_str()), p, &m1)) { *msg = "Model: " + m1; return false; }
+    std::vector<uint8_t> d; std::string err;
+    GameFileRead(FileId(p.c_str()), d, &err, nullptr);
+    int mats = 0, texs = 0, missing = 0;
+    std::set<std::string> texDone;
+    std::string list;
+    for (auto& mat : PathsIn(d, { ".material.bin", ".mat", ".xbt" })) {
+        bool isTex = mat.size() > 4 && mat.compare(mat.size() - 4, 4, ".xbt") == 0;
+        std::string m;
+        if (!ExtractGameFile(FileId(mat.c_str()), mat, &m)) { ++missing; list += "  not in the game: " + mat + "\n"; continue; }
+        if (isTex) { if (texDone.insert(mat).second) ++texs; continue; }
+        ++mats;
+        std::vector<uint8_t> md;
+        if (!GameFileRead(FileId(mat.c_str()), md, &err, nullptr)) continue;
+        for (auto& t : PathsIn(md, { ".xbt" })) {
+            if (!texDone.insert(t).second) continue;
+            if (ExtractGameFile(FileId(t.c_str()), t, &m)) ++texs; else { ++missing; list += "  not in the game: " + t + "\n"; }
+        }
+    }
+    *msg = "Extracted " + p + " with " + std::to_string(mats) + " material(s) and " + std::to_string(texs) +
+           " texture(s) (+ .dds copies) to fc4hook\\dumps\\extracted\\" + (missing ? "\n" + std::to_string(missing) + " referenced file(s) not found:\n" + list : "");
+    Log("models: %s", msg->c_str());
+    return true;
+}
+
+bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFile, const std::wstring& outFile, std::string* msg) {
+    std::string p = LowerA(originalGamePath);
+    for (auto& c : p) if (c == '/') c = '\\';
+    std::vector<uint8_t> xbg, obj; std::string err;
+    if (!AnyFileRead(FileId(p.c_str()), xbg, &err, nullptr)) { *msg = "Couldn't read the original model " + p + ": " + err; return false; }
+    if (!ReadWhole(objFile, obj) || obj.empty()) { *msg = "Couldn't read " + Narrow(objFile); return false; }
+    std::string rep;
+    if (!XbgFromObj(xbg, std::string(obj.begin(), obj.end()), &rep)) { *msg = "Not converted: " + rep; return false; }
+    if (!WriteFileAll(outFile, xbg)) { *msg = "Couldn't write " + Narrow(outFile); return false; }
+    *msg = "Converted: " + rep;
+    Log("models: %s -> %s: %s", Narrow(objFile).c_str(), Narrow(outFile).c_str(), rep.c_str());
+    return true;
+}
+
+// Every model an archetype uses (its .xbg paths), e.g. a weapon's first/third-person models.
+std::vector<std::string> ArchetypeModels(uint64_t id) {
+    std::vector<uint8_t> d; std::string err;
+    std::string path = "entityarchetypeslibrary\\" + std::to_string(id) + ".ark.fcb";
+    if (!AnyFileRead(FileId(path.c_str()), d, &err, nullptr)) return {};
+    return PathsIn(d, { ".xbg" });
+}
+
 static bool ReadFileAll(const std::wstring& p, std::vector<uint8_t>& d) { d.clear(); return ReadWhole(p, d) && !d.empty(); }
 
 // A texture was extracted to dumps\extracted\<rel>: make sure its other half is there too
@@ -462,6 +539,247 @@ int LabelAnimationClips(std::string* msg) {
 }
 
 // Run on a worker thread (indexing all archives the first time takes a few seconds).
+// ------------------------------------------------------------------ archetype catalog
+// Archetype files (entityarchetypeslibrary\<id>.ark.fcb) are "nbCF" binaries that start with
+// their own path, then their library name ("weapons:fcx/ak47", "npc:...", "vehicles:..."). The
+// archives only store hashes, so to list them every small file is checked: the first bytes of
+// each entry are read (LZO keeps that text as a literal run) and only real archetypes are
+// decompressed. Result: fc4hook\archetypes.txt, "id<TAB>library:name" per line.
+static std::atomic<int> s_catDone{ 0 }, s_catTotal{ 0 }, s_catFound{ 0 };
+static std::atomic<bool> s_catBusy{ false };
+
+static bool FindBytes(const uint8_t* d, size_t n, const char* s) {
+    size_t k = strlen(s);
+    for (size_t i = 0; i + k <= n; ++i) if (memcmp(d + i, s, k) == 0) return true;
+    return false;
+}
+
+// "library:name" from a decompressed archetype (the first printable string with a ':' after the path)
+static std::string ArchetypeName(const std::vector<uint8_t>& d, uint64_t* idOut) {
+    const char* tag = "entityarchetypeslibrary\\";
+    size_t n = d.size() < 4096 ? d.size() : 4096, i = 0, k = strlen(tag);
+    for (; i + k <= n; ++i) if (memcmp(&d[i], tag, k) == 0) break;
+    if (i + k > n) return "";
+    *idOut = strtoull((const char*)&d[i + k], nullptr, 10);
+    std::string cur, best;
+    for (size_t j = i; j < n; ++j) {
+        char c = (char)d[j];
+        if (c >= 0x20 && c < 0x7f) { cur += c; continue; }
+        if (cur.size() >= 3 && cur.find(':') != std::string::npos && cur.find('\\') == std::string::npos) {
+            // FCB strings are length-prefixed; a printable length byte ('n' type tag + length)
+            // would stick to the front: drop it when it matches the string's length.
+            for (size_t k = 0; k < 3 && k < cur.size(); ++k)
+                if ((unsigned char)cur[k] == cur.size() - k) { cur = cur.substr(k + 1); break; }
+            best = cur; break;
+        }
+        cur.clear();
+    }
+    return best;
+}
+
+std::string ArchetypeCatalogStatus() {
+    char b[160];
+    if (s_catBusy) snprintf(b, sizeof(b), "scanning %d / %d files, %d archetypes found", s_catDone.load(), s_catTotal.load(), s_catFound.load());
+    else if (s_catTotal) snprintf(b, sizeof(b), "done: %d archetypes", s_catFound.load());
+    else b[0] = 0;
+    return b;
+}
+
+void ArchetypeCatalogBuild() {
+    if (s_catBusy.exchange(true)) return;
+    std::thread([] {
+        std::vector<std::pair<uint64_t, ArcEntry>> cand;
+        std::vector<std::wstring> arcs;
+        {
+            std::lock_guard<std::mutex> lk(s_idxMx);
+            EnsureIndex();
+            arcs = s_arcs;
+            for (auto& kv : s_index) if (kv.second.usize >= 64 && kv.second.usize <= (4u << 20)) cand.push_back(kv);
+        }
+        std::sort(cand.begin(), cand.end(), [](const std::pair<uint64_t, ArcEntry>& a, const std::pair<uint64_t, ArcEntry>& b) {
+            return a.second.arc != b.second.arc ? a.second.arc < b.second.arc : a.second.off < b.second.off; });
+        s_catTotal = (int)cand.size(); s_catDone = 0; s_catFound = 0;
+        std::map<uint64_t, std::string> found;
+        int curArc = -1; HANDLE h = INVALID_HANDLE_VALUE;
+        for (auto& c : cand) {
+            ++s_catDone;
+            const ArcEntry& a = c.second;
+            if (a.arc != curArc) {
+                if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+                curArc = a.arc;
+                h = CreateFileW(arcs[a.arc].c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
+            }
+            if (h == INVALID_HANDLE_VALUE) continue;
+            uint8_t head[96]; DWORD r = 0;
+            DWORD want = a.csize < sizeof(head) ? a.csize : (DWORD)sizeof(head);
+            LARGE_INTEGER li; li.QuadPart = (LONGLONG)a.off;
+            if (!SetFilePointerEx(h, li, nullptr, FILE_BEGIN) || !ReadFile(h, head, want, &r, nullptr) || r != want) continue;
+            if (!FindBytes(head, r, "nbCF") || !FindBytes(head, r, "entityarch")) continue;
+            std::vector<uint8_t> d; std::string err;
+            if (!GameFileRead(c.first, d, &err, nullptr)) continue;
+            uint64_t id = 0;
+            std::string name = ArchetypeName(d, &id);
+            if (!id || name.empty()) continue;
+            found[id] = name;
+            ++s_catFound;
+        }
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        std::string out = "# FC4Hook archetype catalog (made by Spawner > Build catalog). id<TAB>library:name\r\n";
+        for (auto& kv : found) out += std::to_string(kv.first) + "\t" + kv.second + "\r\n";
+        std::vector<uint8_t> bytes(out.begin(), out.end());
+        WriteFileAll(g_rootDir + L"archetypes.txt", bytes);
+        Log("extract: archetype catalog: %d archetypes", (int)found.size());
+        s_catBusy = false;
+    }).detach();
+}
+
+// Value of an archetype reference field (8-byte id) inside archetype `id`, found by the CRC32
+// of the field's name, e.g. "arkPickupArchetype". "#xxxxxxxx" = a raw field hash. 0 = not there.
+uint64_t ArchetypeRefField(uint64_t id, const char* field) {
+    std::string path = "entityarchetypeslibrary\\" + std::to_string(id) + ".ark.fcb";
+    std::vector<uint8_t> d; std::string err;
+    if (!AnyFileRead(FileId(path.c_str()), d, &err, nullptr)) return 0;
+    uint32_t hsh = field[0] == '#' ? (uint32_t)strtoul(field + 1, nullptr, 16) : Crc32((const uint8_t*)field, strlen(field));
+    uint8_t pat[5] = { (uint8_t)hsh, (uint8_t)(hsh >> 8), (uint8_t)(hsh >> 16), (uint8_t)(hsh >> 24), 8 };
+    for (size_t i = 0; i + 13 <= d.size(); ++i)
+        if (memcmp(&d[i], pat, 5) == 0) { uint64_t v; memcpy(&v, &d[i + 5], 8); return v; }
+    return 0;
+}
+
+// ------------------------------------------------------------------ archetype check
+// Why won't my archetype spawn? Looks at the file the game would load for `id` and reports,
+// in plain words: where it comes from, whether it's a real binary .fcb (not XML), whether the
+// id written inside it matches the file name, and whether every model/texture/material/
+// archetype it points to exists (in a mod or in the game).
+static bool FileKnown(uint64_t id, std::string* where) {
+    std::vector<VfsFileEntry> files = VfsFiles();
+    for (auto& f : files) if (f.id == id) { *where = "mod " + f.mod; return true; }
+    if (GameFileExists(id)) { *where = "game"; return true; }
+    return false;
+}
+
+static bool EndsWith(const std::string& s, const char* e) { size_t n = strlen(e); return s.size() >= n && s.compare(s.size() - n, n, e) == 0; }
+
+std::string ArchetypeCheck(uint64_t id) {
+    std::string path = "entityarchetypeslibrary\\" + std::to_string(id) + ".ark.fcb";
+    std::string r = "Archetype " + std::to_string(id) + "\n  file: " + path + "\n";
+    std::vector<uint8_t> d; std::string err, from;
+    if (!AnyFileRead(FileId(path.c_str()), d, &err, &from)) {
+        r += "  PROBLEM: no such file in any enabled mod or in the game.\n"
+             "    Put it at  fc4hook\\mods\\<YourMod>\\files\\" + path + "\n"
+             "    (exact name, .ark.fcb at the end), make sure the mod is ticked in F8 > Mods, and\n"
+             "    restart the game: new loose files are only picked up at start.\n";
+        return r;
+    }
+    r += "  from: " + from + "   (" + std::to_string(d.size()) + " bytes)\n";
+    int problems = 0;
+    if (d.size() >= 1 && (d[0] == '<' || (d.size() >= 4 && d[0] == 0xEF && d[1] == 0xBB && d[2] == 0xBF))) {
+        r += "  PROBLEM: this is an XML text file. The game only reads the binary .fcb format.\n"
+             "    Convert the edited .xml back to .ark.fcb with the Gibbed FC4 FCB converter\n"
+             "    (the same tool that made the .xml) and ship the converted binary file.\n";
+        return r;
+    }
+    if (d.size() < 8 || memcmp(d.data(), "nbCF", 4) != 0) {
+        r += "  PROBLEM: not a binary FCB file (it should start with \"nbCF\"). The conversion back to\n"
+             "    .fcb probably failed, or the file is something else renamed to .ark.fcb.\n";
+        return r;
+    }
+    r += "  format: binary FCB, ok\n";
+    // the id written inside the file
+    const char* tag = "entityarchetypeslibrary\\";
+    size_t k = strlen(tag), at = std::string::npos;
+    for (size_t i = 0; i + k < d.size() && i < 8192; ++i) if (memcmp(&d[i], tag, k) == 0) { at = i; break; }
+    if (at == std::string::npos) r += "  note: the file doesn't name its own path (unusual, may still work)\n";
+    else {
+        uint64_t inner = strtoull((const char*)&d[at + k], nullptr, 10);
+        if (inner != id) {
+            r += "  PROBLEM: the path inside the file says " + std::to_string(inner) + ", but the file is named " + std::to_string(id) + ".\n"
+                 "    In the .xml, change every " + std::to_string(inner) + " that belongs to this archetype (its own\n"
+                 "    entityarchetypeslibrary path and id) to " + std::to_string(id) + ", convert back to .fcb.\n";
+            ++problems;
+        } else r += "  id inside the file: matches\n";
+    }
+    // the library name, for reference
+    { uint64_t x = 0; std::string nm = ArchetypeName(d, &x); if (!nm.empty()) r += "  name: " + nm + "\n"; }
+    // referenced files: printable strings that look like game paths
+    static const char* exts[] = { ".xbg", ".xbt", ".material.bin", ".mab", ".fcb", ".bin", ".spk", ".sbao", ".xml", ".lua", ".bnk", ".hkx", ".mmb", ".bfx", ".feu", ".part" };
+    std::set<std::string> refs;
+    std::string cur;
+    for (size_t i = 0; i <= d.size(); ++i) {
+        char c = i < d.size() ? (char)d[i] : 0;
+        if (c >= 0x20 && c < 0x7f) { cur += c; continue; }
+        if (cur.size() >= 5 && (cur.find('\\') != std::string::npos || cur.find('/') != std::string::npos)) {
+            // drop a printable length byte stuck to the front
+            for (size_t j = 0; j < 3 && j < cur.size(); ++j) if ((unsigned char)cur[j] == cur.size() - j) { cur = cur.substr(j + 1); break; }
+            std::string lc = LowerA(cur);
+            size_t b = lc.find_first_not_of("{*)\"' ");
+            if (b != std::string::npos) lc = lc.substr(b);
+            for (const char* e : exts) if (EndsWith(lc, e) && lc != LowerA(path)) { refs.insert(lc); break; }
+        }
+        cur.clear();
+    }
+    int missing = 0;
+    if (!refs.empty()) r += "  files it uses:\n";
+    for (auto& p : refs) {
+        std::string where;
+        bool ok = FileKnown(FileId(p.c_str()), &where);
+        bool soft = EndsWith(p, ".xml") || EndsWith(p, ".hkx");      // may be resolved another way: don't call it a problem
+        if (!ok && !soft) ++missing;
+        r += std::string(ok ? "    ok      " : soft ? "    not found (may be fine) " : "    MISSING ") + p + (ok ? "   (" + where + ")" : "") + "\n";
+    }
+    if (refs.empty()) r += "  files it uses: none found\n";
+    if (missing) {
+        r += "  PROBLEM: " + std::to_string(missing) + " file(s) it uses don't exist. Put them in your mod's files\\ folder at\n"
+             "    exactly those paths (or point the archetype at files that exist). A model that isn't\n"
+             "    there means nothing to show, and the spawn fails or is invisible.\n";
+        ++problems;
+    }
+    // weapons: the chain the spawner follows for pickups
+    uint64_t props = ArchetypeRefField(id, "#dd5d4f7d");
+    uint64_t pick = ArchetypeRefField(id, "arkPickupArchetype");
+    if (props) {
+        std::string pp = "entityarchetypeslibrary\\" + std::to_string(props) + ".ark.fcb", where;
+        bool ok = FileKnown(FileId(pp.c_str()), &where);
+        r += std::string("  weapon properties archetype ") + std::to_string(props) + (ok ? ": ok (" + where + ")\n" : ": MISSING\n");
+        if (!ok) ++problems;
+        if (!pick) pick = ArchetypeRefField(props, "arkPickupArchetype");
+    }
+    if (pick) {
+        std::string pp = "entityarchetypeslibrary\\" + std::to_string(pick) + ".ark.fcb", where;
+        bool ok = FileKnown(FileId(pp.c_str()), &where);
+        r += std::string("  pickup archetype ") + std::to_string(pick) + (ok ? ": ok (" + where + ")\n" : ": MISSING\n");
+        if (!ok) ++problems;
+    }
+    r += problems ? "  => " + std::to_string(problems) + " problem(s) found, see above.\n"
+                  : "  => no problems found in the file. If it still won't spawn, turn on F8 > Developer > File log,\n"
+                    "     spawn it, and send fc4hook.log + dumps\\file_log.txt with the report.\n";
+    return r;
+}
+
+std::string ArchetypeCheckMods() {
+    std::vector<VfsFileEntry> files = VfsFiles();
+    std::string r;
+    int n = 0;
+    for (auto& f : files) {
+        std::string rel = LowerA(f.rel);
+        for (auto& c : rel) if (c == '/') c = '\\';
+        if (rel.find("entityarchetypeslibrary\\") == std::string::npos) continue;
+        if (!EndsWith(rel, ".ark.fcb")) {
+            r += "File " + f.rel + " (mod " + f.mod + ")\n  PROBLEM: archetype files must end in .ark.fcb (binary). This one will never be loaded.\n"
+                 "    If it's the edited .xml, convert it back to .fcb with the Gibbed FCB converter.\n\n";
+            ++n; continue;
+        }
+        size_t s = rel.rfind('\\');
+        uint64_t id = strtoull(rel.c_str() + s + 1, nullptr, 10);
+        if (!id) { r += "File " + f.rel + " (mod " + f.mod + ")\n  PROBLEM: the file name must be the archetype id (digits only) + .ark.fcb\n\n"; ++n; continue; }
+        r += ArchetypeCheck(id) + "\n";
+        ++n;
+    }
+    if (!n) r = "None of the enabled mods add or replace an archetype (files\\entityarchetypeslibrary\\<id>.ark.fcb).\n"
+                "Remember: new loose files are picked up when the game starts.\n";
+    return r;
+}
+
 void RunExtractJob(std::function<void()> job) { std::thread(std::move(job)).detach(); }
 
 } // namespace fc4

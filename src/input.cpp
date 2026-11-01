@@ -149,6 +149,17 @@ bool PadRead(int user, uint16_t* buttons) {
     return false;
 }
 
+// Triggers 0..255 (left, right) of pad 0, for scripts (aim detection, vehicle boost).
+bool PadTriggers(int user, int* lt, int* rt) {
+    for (auto f : o_XGet) if (f) {
+        XState st = {};
+        if (f((DWORD)user, &st) != 0) return false;
+        *lt = st.pad.lt; *rt = st.pad.rt;
+        return true;
+    }
+    return false;
+}
+
 static void HookXInput() {
     static const wchar_t* dlls[] = { L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll" };
     void* hooks[] = { (void*)hk_XGet0, (void*)hk_XGet1, (void*)hk_XGet2 };

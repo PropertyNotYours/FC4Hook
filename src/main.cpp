@@ -72,6 +72,7 @@ static DWORD WINAPI InitThread(LPVOID self) {
 
     OverlayInit();
     InputInit();
+    AudioInit();
     LoadPlugins();
     GameInit();
     Log("Init done. Press %s in game for the menu.", KeyName(g_cfg.menuKey).c_str());

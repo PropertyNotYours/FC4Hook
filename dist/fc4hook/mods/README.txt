@@ -25,7 +25,7 @@ the game's archives. Nothing of the game's is modified; delete the mod folder to
       - a new archetype (weapon, NPC, prop, vehicle):
           files\entityarchetypeslibrary\<new id>.ark.fcb
         Pick an id that isn't used yet. The game builds the file name from the id, so any
-        reference to that id (Armory, F8 > Developer > Spawner, your own archetypes, shop
+        reference to that id (Armory, F8 > Spawner, your own archetypes, shop
         entries) loads your file. Its models/textures/materials go in files\ too.
       - new textures, models, materials, sounds, animation packages, at new paths that your
         own archetype files point to.
@@ -69,9 +69,70 @@ foo_d.xbt (the smaller mip levels). Endings: _d colour, _n normal map, _m mask.
 Outside the game: drag .xbt or .dds files onto fc4hook\tools\fc4tex.exe (keep the
 original .xbt files next to the .dds; the result goes in a "packed" folder).
 
+WEAPON WORKSHOP (the easy way to make a weapon)
+-----------------------------------------------
+F8 > Workshop. No converters, no hand-editing ids:
+  1. "New weapon": choose the weapon to start from, type a name, Create. FC4Hook copies the
+     weapon's three archetypes (item, properties, pickup) into mods\Workshop_<Name>\ under new
+     ids, links them to each other and adds the weapon to the Armory (armory.txt).
+  2. Restart the game.
+  3. "Your weapons" > pick it:
+       Stats     fire rate, magazine, reload times, range, recoil, move speed, silent, infinite
+                 ammo... ("show every value" lists all ~1,000 values with the game's own names)
+       Model     point the first- and third-person models at your own .xbg (shipped in the
+                 mod's files\ folder) or at any model in the game. "Extract it" copies the
+                 current model + materials + textures out to edit (also F8 > Developer > Models)
+       Advanced  every value of all three archetypes
+     Give it to me / Spawn pickup to try it. Edits are saved straight into the mod's files;
+     restart the game after editing.
+  The mod folder is a normal FC4Hook mod: zip it and share it. workshop.txt in it is the recipe
+  (name, base weapon, ids) that the Workshop reads back.
+  Not covered yet: the name shown in game (it's a localisation string, so it still says the
+  base weapon's name), the shop entry/icon, and damage (it lives on the ammo/bullet type).
+
+CUSTOM MODELS (.obj -> .xbg)
+----------------------------
+FC4Hook turns an EDITED game model back into a game model: a longer barrel, a bigger scope,
+a reshaped grip. Everything except the shape (UVs, normals, skinning, materials, LODs) stays
+the game's own, so the result just works.
+  1. F8 > Workshop > Model > "Extract it" (or F8 > Developer > Models) to get the original .xbg.
+  2. Import the .xbg into Blender with a Far Cry .xbg importer, change the shape: move, scale,
+     rotate vertices. DON'T add or delete vertices (the vertex order must stay the same).
+  3. Export as .obj (Blender's default axes: Y forward, Z up).
+  4. Workshop > Model > type the .obj's name (if it's anywhere in the weapon's mod folder) or
+     full path > "Use my .obj". FC4Hook writes the new .xbg into the mod and points the weapon
+     at it. Restart the game.
+  To replace a model everywhere in the game instead: F8 > Developer > Models > "Turn an edited
+  .obj back into a game model". Outside the game: drag the original .xbg and your .obj onto
+  fc4hook\tools\fc4mdl.exe.
+  If the .obj doesn't line up (vertices added/removed, different model, re-ordered), nothing
+  is written and FC4Hook says why. Textures are separate: see EDITING TEXTURES.
+
+NEW ARCHETYPES: CHECKLIST
+-------------------------
+Copying an archetype (say the buggy) into a new one:
+  1. Extract the original .ark.fcb (File log > Extract) and convert it to .xml with the
+     Gibbed FC4 FCB converter.
+  2. Pick a new id (digits only, not used by the game). In the .xml change the archetype's
+     OWN id everywhere it appears, including its path "entityarchetypeslibrary\<id>.ark.fcb".
+  3. Convert the .xml BACK to binary. Ship the binary, named <new id>.ark.fcb, at
+       fc4hook\mods\<YourMod>\files\entityarchetypeslibrary\<new id>.ark.fcb
+     The .xml itself is never loaded by the game.
+  4. Every model / texture / material path inside it must exist: the game's own, or new
+     files you ship in files\ at exactly those paths (custom models must be real .xbg files
+     made with the Dunia tools).
+  5. Restart the game (new loose files are picked up at start).
+  6. F8 > Spawner > "Check an archetype": type the id and press Check (or "Check every
+     archetype in my mods"). It tells you, in plain words, what's wrong: file not found, still
+     XML, id inside doesn't match the file name, missing models/textures, missing weapon
+     properties or pickup archetype. Then spawn it from the Spawner.
+Weapons are three archetypes: the weapon item, its WeaponProperties (stats, models, pickup)
+and the pickup. A new weapon usually needs new copies of all three pointing at each other.
+
 TESTING
 -------
-F8 > Developer > Spawner      spawn any archetype id in front of you (incl. your new ones)
+F8 > Spawner                  spawn any archetype id in front of you (incl. your new ones),
+                              and "Check an archetype" to find out why one won't spawn
 F8 > Developer > Animation    attach animation packages and play animations on you or on
                               what you spawned, through the game's own animation system
 

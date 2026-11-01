@@ -48,11 +48,14 @@ cheats.txt, positions.txt   cheat switches / saved positions (written by 40_chea
 | `ModLog(...)`, `ModLogDebug/Warn/Error(...)` | write to `fc4hook.log` and the console at that level |
 | `ModWriteFile(path, text [, append])`, `ModReadFile(path)`, `ModFileExists(path)` | files under `bin\fc4hook\` |
 | `ModSetState(key, value)`, `ModGetState(key)` | key/value store shared with the menu and plugins |
-| `ModVersion()` | `"1.3.0"` |
+| `ModVersion()` | `"1.6.0"` |
 | `ModArchiveStatus()`, `ModLoadStrings(path)` | mod archive state / add a strings.bin |
 | `ModLooseStatus()` | loose-file mods status |
 | `ModFileId(path)` | the game's file id (CRC-64 of the lower-case path) as a decimal string |
 | `ModArchetypeFile(id)` | `"entityarchetypeslibrary\\<id>.ark.fcb"` |
+| `ModKeyDown(vk)`, `ModPadTrigger("left"\|"right")` | key held / gamepad trigger 0..1 |
+| `ModSetAudioSpeed(f)` | play all game sound at `f`x speed (0.05..1), used by slow motion |
+| `ModArchetypeRef(id, field)` | an archetype reference field (by name, or `"#hash"`) of archetype `id`, e.g. `"arkPickupArchetype"` |
 | `ModFileLog([on])` | switch the file request log on/off, returns its state |
 | `FC4Spawn.*`, `FC4Anim.*` | spawner and animation helpers (`60_spawner.lua`) |
 | `ModNativeAddress(name)` | where a native lives, e.g. `"FC64+0x18bad60"` |

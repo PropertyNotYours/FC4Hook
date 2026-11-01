@@ -1,4 +1,4 @@
-FC4Hook v1.3.0 - script hook & mod menu for Far Cry 4 (PC)
+FC4Hook v1.6.0 - script hook & mod menu for Far Cry 4 (PC)
 ===========================================================
 
 FC4Hook loads into Far Cry 4 and gives you an in-game menu (F8) with:
@@ -40,7 +40,7 @@ INSTALL
         Far Cry 4\bin\winmm.dll          (the ASI loader, see above)
         Far Cry 4\bin\fc4hook.asi
         Far Cry 4\bin\fc4hook\...
-  3. Start the game. A green "FC4Hook v1.3.0 loaded" banner shows at the top left.
+  3. Start the game. A green "FC4Hook v1.6.0 loaded" banner shows at the top left.
      Load a save, then press F8.
 
   Steam default location:  C:\Program Files (x86)\Steam\steamapps\common\Far Cry 4\
@@ -49,7 +49,7 @@ INSTALL
 UPDATING FROM AN OLDER FC4HOOK
 ------------------------------
   Copy over the old files. Your settings, saved positions and co-op tower data are kept.
-  From 1.0.0 / 1.2.x: nothing to delete.
+  From 1.0.0 / 1.2.x / 1.3.x: nothing to delete.
   Old files you can delete:  fc4hook\mods\armory.txt  and these scripts if present:
   armory_test.lua, extract_*.lua, find_weather_presets.lua, autorun\00_hello.lua.
   FC4Hook 1.0 contains no custom weapons. If you use a weapon mod that was made for

@@ -405,7 +405,8 @@ bool ModelFromGlb(const std::string& baseGamePath, const std::wstring& glbFile, 
 }
 
 // ------------------------------------------------------------------ animation clips (aniclip.cpp)
-bool AniClipToGlb(const std::vector<uint8_t>& clip, const std::vector<uint8_t>& skel, std::vector<uint8_t>& glb, std::string* report, uint64_t clipId);
+bool AniClipToGlb(const std::vector<uint8_t>& clip, const std::vector<uint8_t>& skel, std::vector<uint8_t>& glb, std::string* report, uint64_t clipId, const std::vector<uint8_t>* gunSkel);
+std::string AniClipWeapon(const std::vector<uint8_t>& clip);
 bool AniGlbClipId(const std::vector<uint8_t>& glb, uint64_t* id);
 bool AniClipFromGlb(const std::vector<uint8_t>& tmpl, const std::vector<uint8_t>& glb, const std::vector<uint8_t>& skel, std::vector<uint8_t>& out, std::string* report);
 static const char* kArmsSkeleton = "graphics\\_common\\characters\\narrative\\firstpersonarms\\firstperson_rightarm.xbg";
@@ -417,7 +418,15 @@ bool ClipExportGlb(uint64_t id, std::wstring* outPath, std::string* msg) {
     std::vector<uint8_t> clip, skel, glb; std::string err, rep;
     if (!GameFileRead(id, clip, &err, nullptr)) { *msg = IdHex(id) + ": " + err; return false; }
     if (!AnyFileRead(FileId(kArmsSkeleton), skel, &err, nullptr)) { *msg = "couldn't read the first-person arms skeleton: " + err; return false; }
-    if (!AniClipToGlb(clip, skel, glb, &rep, id)) { *msg = IdHex(id) + ": " + rep; return false; }
+    // the gun's model, for its bone names and hierarchy (weapon clips move the gun's parts too)
+    std::vector<uint8_t> gun; bool haveGun = false;
+    std::string pkg = AniClipWeapon(clip);
+    if (!pkg.empty()) {
+        std::string alt = pkg; size_t e = alt.find("eagle"); if (e != std::string::npos && e > 0 && alt[e - 1] != '_') alt.insert(e, "_");
+        for (std::string p : { "graphics\\_common\\weapons\\" + pkg + "\\" + pkg + ".xbg", "graphics\\_common\\weapons\\" + pkg + "\\" + alt + ".xbg" })
+            if (!haveGun && AnyFileRead(FileId(p.c_str()), gun, &err, nullptr)) haveGun = true;
+    }
+    if (!AniClipToGlb(clip, skel, glb, &rep, id, haveGun ? &gun : nullptr)) { *msg = IdHex(id) + ": " + rep; return false; }
     std::wstring out = g_rootDir + L"dumps\\animations\\" + Widen(IdHex(id)) + L".glb";
     for (size_t k = 0; k < out.size(); ++k) if (out[k] == L'\\' && k > 2) CreateDirectoryW(out.substr(0, k).c_str(), nullptr);
     if (!WriteFileAll(out, glb)) { *msg = "can't write " + Narrow(out); return false; }
@@ -622,6 +631,13 @@ static std::map<uint64_t, std::string> LoadClipNames() {
     fclose(f);
     return r;
 }
+static std::string ClipStem(const std::string& path);
+// "1stge_..." etc. for a clip id ("" if unknown); loads dumps\clip_names.txt once.
+std::string ClipNameOf(uint64_t id) {
+    static std::once_flag once; static std::map<uint64_t, std::string> m;
+    std::call_once(once, [] { m = LoadClipNames(); });
+    auto it = m.find(id); return it == m.end() ? std::string() : ClipStem(it->second);
+}
 static std::string ClipStem(const std::string& path) {
     size_t s = path.find_last_of('\\'); std::string n = s == std::string::npos ? path : path.substr(s + 1);
     if (n.size() > 4) n.resize(n.size() - 4);
@@ -732,6 +748,17 @@ int FindClipReferences(const std::string& filterIn, std::string* msg) {
     std::string filter = LowerA(filterIn);
     std::map<uint64_t, std::string> names = LoadClipNames();
     std::map<uint64_t, std::string> want;
+    // "id:<hex>[,<hex>...]" or "num:<decimal>": search for those 8-byte values instead of clip names
+    if (filter.rfind("id:", 0) == 0 || filter.rfind("num:", 0) == 0) {
+        bool hex = filter[0] == 'i';
+        std::string rest = filter.substr(hex ? 3 : 4), cur;
+        for (size_t i = 0; i <= rest.size(); ++i) {
+            if (i == rest.size() || rest[i] == ',' || rest[i] == ' ') {
+                if (!cur.empty()) want[hex ? _strtoui64(cur.c_str(), nullptr, 16) : _strtoui64(cur.c_str(), nullptr, 10)] = cur;
+                cur.clear();
+            } else cur += rest[i];
+        }
+    } else
     for (auto& kv : names) if (!filter.empty() && LowerA(kv.second).find(filter) != std::string::npos) want[kv.first] = ClipStem(kv.second);
     if (want.empty()) { *msg = "No named clips contain \"" + filterIn + "\" (run Find clip names first)."; return 0; }
     std::vector<std::pair<uint64_t, ArcEntry>> all;

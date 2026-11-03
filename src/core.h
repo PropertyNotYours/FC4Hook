@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.8.9"
+#define FC4HOOK_VERSION      "1.12.1"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -115,8 +115,10 @@ char FcbKind(const FcbValue& v);
 char FcbKindOf(const std::vector<uint8_t>& d, const FcbValue& v);
 // workshop.cpp: Weapon Workshop
 struct WeaponChain { uint64_t item = 0, props = 0, pickup = 0; };
-struct WorkshopWeapon { std::string mod, name; uint64_t base = 0; uint64_t ids[3] = {}; };
+struct WorkshopWeapon { std::string mod, name; uint64_t base = 0; uint64_t ids[3] = {}; std::string bones, bonesTp; };
 bool WeaponChainOf(uint64_t item, WeaponChain* c);
+std::string WorkshopAnimSet(const WorkshopWeapon& w);
+bool WorkshopSetAnimSet(const WorkshopWeapon& w, uint64_t donorItem, std::string* msg);
 void WorkshopInstallGuard();
 std::string WorkshopIdList();
 int WorkshopRegister();                  // add Workshop weapons to the game's weapon -> properties map
@@ -137,6 +139,8 @@ void FileLogAnnotate(const std::map<uint64_t, std::string>& labels);
 int  LabelAnimationClips(std::string* msg);        // extract.cpp
 int  FindClipNames(std::string* msg);              // extract.cpp: dumps\clip_names.txt
 int  FindClipReferences(const std::string& filter, std::string* msg);
+std::string ClipNameOf(uint64_t id);                // extract.cpp
+bool ArmsSnapshot(std::string* msg);                 // vfs.cpp: dumps\\arms_snapshot_N.bin
 struct ClipEvent { uint64_t tick; uint64_t id; uintptr_t ctx; };
 void ClipMonitorInstall();
 bool ClipMonitorAvailable();

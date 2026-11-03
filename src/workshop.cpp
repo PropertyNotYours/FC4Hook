@@ -12,6 +12,7 @@
 // Restart the game after creating or editing: loose files are packed at start.
 #include "core.h"
 #include <map>
+#include <functional>
 #include <cstring>
 #include <atomic>
 #include <mutex>
@@ -163,6 +164,8 @@ std::vector<WorkshopWeapon> WorkshopList() {
             else if (k == "item") w.ids[0] = strtoull(v.c_str(), nullptr, 10);
             else if (k == "props") w.ids[1] = strtoull(v.c_str(), nullptr, 10);
             else if (k == "pickup") w.ids[2] = strtoull(v.c_str(), nullptr, 10);
+            else if (k == "bones") w.bones = v;
+            else if (k == "bones_tp") w.bonesTp = v;
         }
         r.push_back(w);
     } while (FindNextFileW(h, &fd));
@@ -327,6 +330,234 @@ void WorkshopInstallGuard() {
         return;
     }
     if (CreateHook(f, (void*)hk_AddWeapon, (void**)&o_AddWeapon)) LogL(LOG_DEBUG, "workshop: inventory guard installed");
+}
+
+
+// ------------------------------------------------------------------ animation set
+// What decides a weapon's first-person arm animations (found 2026-11, patch 1.10) lives in the
+// item archetype, and three things must agree:
+//   object 53facff5 field ecdd88a8 (u32)       the animation-type number: picks the weapon's branch
+//                                               in the move data (1911 = 4, D50 = 20)
+//   object 09d5e1b2 (animation component)      package name (7d06447f, c22dbbc8), package id
+//                                               (cb44c86d) and gun skeleton (f9f2d5f4 path, 0b80933a id)
+//   d9c50d17 dependency lists                   type 4cdda42c = skeleton ids, 84a30af0 = package ids
+// Package and skeleton names change length, so the file is rebuilt as a tree. FCB layout: an
+// object is  count(children) u32(hash) count(values) {u32 hash, count(size) bytes}  children;
+// count = 1 byte, or FF + u32. FE + u32 is a back-reference: for an object the index of an
+// earlier object (kept as is), for a value the distance back to an earlier value's count byte.
+// Header: 'nbCF', u32 2, u32 objects, u32 objects + object refs - 1.
+namespace fcbt {
+struct Val { uint32_t hash; std::vector<uint8_t> data; bool ref = false; size_t target = 0, pos = 0; };
+struct Obj { bool ref = false; uint32_t refIndex = 0; uint32_t hash = 0; std::vector<Val> vals; std::vector<Obj> kids; };
+struct Rd {
+    const std::vector<uint8_t>& d; size_t p; bool bad = false;
+    uint8_t u8() { if (p >= d.size()) { bad = true; return 0; } return d[p++]; }
+    uint32_t u32() { if (p + 4 > d.size()) { bad = true; return 0; } uint32_t v; memcpy(&v, &d[p], 4); p += 4; return v; }
+    uint32_t cnt(bool* off) { uint8_t b = u8(); *off = false; if (b < 0xFE) return b; *off = b == 0xFE; return u32(); }
+};
+static bool ReadObj(Rd& r, Obj& o, int depth) {
+    if (depth > 64 || r.bad) return false;
+    bool off; uint32_t k = r.cnt(&off);
+    if (off) { o.ref = true; o.refIndex = k; return true; }
+    o.hash = r.u32();
+    uint32_t n = r.cnt(&off);
+    for (uint32_t i = 0; i < n && !r.bad; ++i) {
+        Val v; v.hash = r.u32(); v.pos = r.p;
+        uint32_t sz = r.cnt(&off);
+        if (off) { v.ref = true; v.target = v.pos - sz; }
+        else { if (r.p + sz > r.d.size()) { r.bad = true; break; } v.data.assign(r.d.begin() + r.p, r.d.begin() + r.p + sz); r.p += sz; }
+        o.vals.push_back(std::move(v));
+    }
+    o.kids.resize(k);
+    for (uint32_t i = 0; i < k && !r.bad; ++i) if (!ReadObj(r, o.kids[i], depth + 1)) return false;
+    return !r.bad;
+}
+static bool Parse(const std::vector<uint8_t>& d, Obj& root) {
+    if (d.size() < 16 || memcmp(d.data(), "nbCF", 4) != 0) return false;
+    Rd r{ d, 16 };
+    return ReadObj(r, root, 0) && r.p == d.size();
+}
+static void PutCnt(std::vector<uint8_t>& o, uint32_t n) {
+    if (n < 0xFE) o.push_back((uint8_t)n); else { o.push_back(0xFF); o.insert(o.end(), (uint8_t*)&n, (uint8_t*)&n + 4); }
+}
+static void Write(const Obj& o, std::vector<uint8_t>& out, std::map<size_t, size_t>& posMap, std::vector<std::pair<size_t, size_t>>& fix,
+                  uint32_t& objs, uint32_t& refs) {
+    if (o.ref) { out.push_back(0xFE); out.insert(out.end(), (uint8_t*)&o.refIndex, (uint8_t*)&o.refIndex + 4); ++refs; return; }
+    ++objs;
+    PutCnt(out, (uint32_t)o.kids.size());
+    out.insert(out.end(), (uint8_t*)&o.hash, (uint8_t*)&o.hash + 4);
+    PutCnt(out, (uint32_t)o.vals.size());
+    for (auto& v : o.vals) {
+        out.insert(out.end(), (uint8_t*)&v.hash, (uint8_t*)&v.hash + 4);
+        posMap[v.pos] = out.size();
+        if (v.ref) { fix.push_back({ out.size(), v.target }); out.insert(out.end(), 5, 0); out[out.size() - 5] = 0xFE; }
+        else { PutCnt(out, (uint32_t)v.data.size()); out.insert(out.end(), v.data.begin(), v.data.end()); }
+    }
+    for (auto& k : o.kids) Write(k, out, posMap, fix, objs, refs);
+}
+static bool Serialize(const std::vector<uint8_t>& orig, const Obj& root, std::vector<uint8_t>& out) {
+    out.assign(orig.begin(), orig.begin() + 16);
+    std::map<size_t, size_t> posMap; std::vector<std::pair<size_t, size_t>> fix; uint32_t objs = 0, refs = 0;
+    Write(root, out, posMap, fix, objs, refs);
+    for (auto& f : fix) {
+        auto it = posMap.find(f.second); if (it == posMap.end()) return false;
+        uint32_t off = (uint32_t)(f.first - it->second); memcpy(&out[f.first + 1], &off, 4);
+    }
+    uint32_t h2 = objs, h3 = objs + refs - 1; memcpy(&out[8], &h2, 4); memcpy(&out[12], &h3, 4);
+    return true;
+}
+template <class F> static void Walk(Obj& o, F f) { if (o.ref) return; f(o); for (auto& k : o.kids) Walk(k, f); }
+static Val* Field(Obj& o, uint32_t h) { for (auto& v : o.vals) if (v.hash == h && !v.ref) return &v; return nullptr; }
+} // namespace fcbt
+
+struct AnimSet { bool ok = false; uint32_t type = 0; std::vector<uint8_t> pkgName, pkgName2, pkgId, skel, skelId, depSkel, depPkg; };
+static AnimSet ReadAnimSet(fcbt::Obj& root) {
+    AnimSet a; int found = 0;
+    fcbt::Walk(root, [&](fcbt::Obj& o) {
+        using namespace fcbt;
+        if (o.hash == 0x53facff5) if (Val* v = Field(o, 0xecdd88a8)) if (v->data.size() == 4) { memcpy(&a.type, v->data.data(), 4); ++found; }
+        if (o.hash == 0x09d5e1b2) {
+            if (Val* v = Field(o, 0x7d06447f)) { a.pkgName = v->data; ++found; }
+            if (Val* v = Field(o, 0xc22dbbc8)) a.pkgName2 = v->data;
+            if (Val* v = Field(o, 0xcb44c86d)) a.pkgId = v->data;
+            if (Val* v = Field(o, 0xf9f2d5f4)) a.skel = v->data;
+            if (Val* v = Field(o, 0x0b80933a)) a.skelId = v->data;
+        }
+        if (o.hash == 0x0ad3ab2c && o.vals.size() >= 2 && !o.vals[0].ref && o.vals[0].data.size() == 4) {
+            uint32_t t; memcpy(&t, o.vals[0].data.data(), 4);
+            if (t == 0x4cdda42cu && !o.vals[1].ref) a.depSkel = o.vals[1].data;
+            if (t == 0x84a30af0u && !o.vals[1].ref) a.depPkg = o.vals[1].data;
+        }
+    });
+    a.ok = found >= 2 && a.pkgId.size() == 8;
+    return a;
+}
+static void WriteAnimSet(fcbt::Obj& root, const AnimSet& a) {
+    fcbt::Walk(root, [&](fcbt::Obj& o) {
+        using namespace fcbt;
+        if (o.hash == 0x53facff5) if (Val* v = Field(o, 0xecdd88a8)) if (v->data.size() == 4) memcpy(v->data.data(), &a.type, 4);
+        if (o.hash == 0x09d5e1b2) {
+            if (Val* v = Field(o, 0x7d06447f)) v->data = a.pkgName;
+            if (Val* v = Field(o, 0xc22dbbc8)) if (!a.pkgName2.empty()) v->data = a.pkgName2;
+            if (Val* v = Field(o, 0xcb44c86d)) v->data = a.pkgId;
+            if (Val* v = Field(o, 0xf9f2d5f4)) if (!a.skel.empty()) v->data = a.skel;
+            if (Val* v = Field(o, 0x0b80933a)) if (!a.skelId.empty()) v->data = a.skelId;
+        }
+        if (o.hash == 0x0ad3ab2c && o.vals.size() >= 2 && !o.vals[0].ref && o.vals[0].data.size() == 4) {
+            uint32_t t; memcpy(&t, o.vals[0].data.data(), 4);
+            if (t == 0x4cdda42cu && !a.depSkel.empty()) { o.vals[1].ref = false; o.vals[1].data = a.depSkel; }
+            if (t == 0x84a30af0u && !a.depPkg.empty()) { o.vals[1].ref = false; o.vals[1].data = a.depPkg; }
+        }
+    });
+}
+static std::string AnimSetText(const AnimSet& a) {
+    std::string n((const char*)a.pkgName.data(), strnlen((const char*)a.pkgName.data(), a.pkgName.size()));
+    return n + " (type " + std::to_string(a.type) + ")";
+}
+
+// The animation set the weapon uses now, e.g. "kimber (type 4)".
+std::string WorkshopAnimSet(const WorkshopWeapon& w) {
+    std::vector<uint8_t> d;
+    if (!ReadDisk(ArkFile(w.mod, w.ids[0]), d)) return "?";
+    fcbt::Obj root; if (!fcbt::Parse(d, root)) return "?";
+    AnimSet a = ReadAnimSet(root);
+    return a.ok ? AnimSetText(a) : "?";
+}
+
+// Give the weapon the first-person animation set of another weapon (its type number, package and
+// gun skeleton). The donor is read from the game (or a mod).
+bool WorkshopSetAnimSet(const WorkshopWeapon& w, uint64_t donorItem, std::string* msg) {
+    std::vector<uint8_t> dd, d; std::string err;
+    if (!AnyFileRead(FileId(ArkPath(donorItem).c_str()), dd, &err, nullptr)) { *msg = "Couldn't read that weapon: " + err; return false; }
+    fcbt::Obj droot; if (!fcbt::Parse(dd, droot)) { *msg = "That weapon's file has an unknown layout."; return false; }
+    AnimSet a = ReadAnimSet(droot);
+    if (!a.ok) { *msg = "That weapon has no first-person animation set (is it a weapon item?)."; return false; }
+    std::wstring path = ArkFile(w.mod, w.ids[0]);
+    if (!ReadDisk(path, d)) { *msg = "Couldn't read " + Narrow(path); return false; }
+    fcbt::Obj root; if (!fcbt::Parse(d, root)) { *msg = "This weapon's file has an unknown layout."; return false; }
+    AnimSet cur = ReadAnimSet(root);
+    if (!cur.ok) { *msg = "This weapon's file has no animation component."; return false; }
+    // keep a backup of the first version
+    std::wstring bak = path + L".orig";
+    if (GetFileAttributesW(bak.c_str()) == INVALID_FILE_ATTRIBUTES) WriteDisk(bak, d.data(), d.size());
+    WriteAnimSet(root, a);
+    std::vector<uint8_t> out;
+    if (!fcbt::Serialize(d, root, out)) { *msg = "Couldn't rebuild the file (unexpected references)."; return false; }
+    fcbt::Obj check; if (!fcbt::Parse(out, check) || !ReadAnimSet(check).ok) { *msg = "Rebuilt file didn't check out; nothing written."; return false; }
+    if (!WriteDisk(path, out.data(), out.size())) { *msg = "Couldn't write " + Narrow(path); return false; }
+    // reload style lives in the weapon properties (magazine vs shell by shell...): copy every
+    // field whose name mentions reload from the donor's properties, matched by object path
+    std::string reloadNote;
+    {
+        WeaponChain dc; std::vector<uint8_t> dp, mp;
+        std::wstring ppath = ArkFile(w.mod, w.ids[1]);
+        if (WeaponChainOf(donorItem, &dc) && AnyFileRead(FileId(ArkPath(dc.props).c_str()), dp, &err, nullptr) && ReadDisk(ppath, mp)) {
+            fcbt::Obj dr, mr;
+            if (fcbt::Parse(dp, dr) && fcbt::Parse(mp, mr)) {
+                std::map<std::string, fcbt::Obj*> dobj;
+                std::function<void(fcbt::Obj&, const std::string&, std::map<std::string, fcbt::Obj*>&)> idx =
+                    [&](fcbt::Obj& o, const std::string& path, std::map<std::string, fcbt::Obj*>& m) {
+                        if (o.ref) return;
+                        std::string me = path + "/" + std::to_string(o.hash);
+                        if (!m.count(me)) m[me] = &o;
+                        for (auto& k : o.kids) idx(k, me, m);
+                    };
+                std::map<std::string, fcbt::Obj*> mobj;
+                idx(dr, "", dobj); idx(mr, "", mobj);
+                int n = 0; std::string names;
+                for (auto& kv : mobj) {
+                    auto it = dobj.find(kv.first); if (it == dobj.end()) continue;
+                    for (auto& v : kv.second->vals) {
+                        if (v.ref) continue;
+                        std::string nm = FcbName(v.hash), l = nm;
+                        for (auto& c : l) c = (char)tolower((unsigned char)c);
+                        if (l.find("reload") == std::string::npos) continue;
+                        if (fcbt::Val* dv = fcbt::Field(*it->second, v.hash)) if (dv->data != v.data) {
+                            v.data = dv->data; ++n;
+                            if (names.size() < 200) names += (names.empty() ? "" : ", ") + nm;
+                        }
+                    }
+                }
+                std::vector<uint8_t> pout;
+                if (n && fcbt::Serialize(mp, mr, pout)) {
+                    std::wstring pb = ppath + L".orig";
+                    if (GetFileAttributesW(pb.c_str()) == INVALID_FILE_ATTRIBUTES) WriteDisk(pb, mp.data(), mp.size());
+                    fcbt::Obj chk;
+                    if (fcbt::Parse(pout, chk) && WriteDisk(ppath, pout.data(), pout.size()))
+                        reloadNote = " Reload style copied too (" + std::to_string(n) + " settings: " + names + ").";
+                }
+            }
+        }
+    }
+    // remember the donor's models: new models for this weapon are built on their bones
+    std::string m1, mtp;
+    fcbt::Walk(droot, [&](fcbt::Obj& o) {
+        for (auto& v : o.vals) if (v.hash == 0xc230e653 && !v.ref && v.data.size() > 5) {
+            std::string t((const char*)v.data.data(), strnlen((const char*)v.data.data(), v.data.size()));
+            std::string l = t; for (auto& c : l) c = (char)tolower((unsigned char)c);
+            if (l.size() < 5 || l.compare(l.size() - 4, 4, ".xbg") != 0) continue;
+            if (l.find("_tp") != std::string::npos) { if (mtp.empty()) mtp = t; } else if (m1.empty()) m1 = t;
+        }
+    });
+    {
+        std::vector<uint8_t> t; ReadDisk(ModDir(w.mod) + L"workshop.txt", t);
+        std::string s(t.begin(), t.end()), o;
+        size_t p = 0;
+        while (p < s.size()) {
+            size_t e = s.find('\n', p); if (e == std::string::npos) e = s.size();
+            std::string l = s.substr(p, e - p + (e < s.size() ? 1 : 0)); p = e + 1;
+            if (l.rfind("bones=", 0) == 0 || l.rfind("bones_tp=", 0) == 0 || l.rfind("animset=", 0) == 0) continue;
+            o += l;
+        }
+        if (!o.empty() && o.back() != '\n') o += "\r\n";
+        o += "animset=" + std::to_string(donorItem) + "\r\n";
+        if (!m1.empty()) o += "bones=" + m1 + "\r\n";
+        if (!mtp.empty()) o += "bones_tp=" + mtp + "\r\n";
+        WriteDisk(ModDir(w.mod) + L"workshop.txt", o.data(), o.size());
+    }
+    *msg = "Animation set is now " + AnimSetText(a) + " (was " + AnimSetText(cur) + ")." + reloadNote + " Restart the game. "
+           "Rebuild the gun's models (Model tab, Use my .glb) so they sit right in the hands: they're now built on " + (m1.empty() ? std::string("that weapon's") : m1) + "'s bones.";
+    return true;
 }
 
 // ------------------------------------------------------------------ registration

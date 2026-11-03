@@ -1366,6 +1366,9 @@ static void TabFileLog() {
         ImGui::SameLine(); Help("Searches every game file for the ids of the named clips containing this text (e.g. sekimber = "
                                 "the 1911's clips) and lists the files that use them in dumps\\clip_refs.txt. Takes a few minutes.");
     }
+    ImGui::SameLine(); if (ImGui::Button("Snapshot arms")) { std::string m; ArmsSnapshot(&m); SetState("filelog.status", m); }
+    ImGui::SameLine(); Help("Saves the player's first-person animation state (from the newest first-person clip) to "
+                            "dumps\\arms_snapshot_N.bin. Draw one gun, wait a second, press; draw another, press again.");
     ImGui::SameLine(); if (ImGui::Button("Open extracted folder")) { CreateDirectoryW((g_rootDir + L"dumps\\extracted").c_str(), nullptr); OpenFolder(g_rootDir + L"dumps\\extracted"); }
     ImGui::SameLine(); Help("Texture editing: Extract a texture (.xbt). FC4Hook also writes a .dds of the whole image next to it. "
                             "Open the .dds in paint.net / GIMP / Photoshop, paint, and save it as DDS in the same format (DXT1/BC1 for "
@@ -2313,15 +2316,51 @@ static bool WsModelPathFromInput(const WorkshopWeapon& w, std::string in, std::s
 
 // Workshop > Animations: the clips the game played (clip monitor), export them to Blender and replace them
 // with your own .glb. Replacements go in this weapon's mod as files\__unknown\<clip id>.ani.
+
+// "1stge_uppb_reloadregular_+000fw_sekimber" -> "Reload". Clip names come from Find clip names
+// (dumps\clip_names.txt); unknown clips -> "".
+static std::string FriendlyClip(uint64_t id) {
+    std::string n = ClipNameOf(id);
+    if (n.empty()) return "";
+    std::vector<std::string> p; { std::string cur; for (char c : n) { if (c == '_') { p.push_back(cur); cur.clear(); } else cur += c; } p.push_back(cur); }
+    // action = the parts after "<view>ge" and "<body part>", up to the "+000fw" angle part
+    std::string act;
+    for (size_t i = 2; i < p.size(); ++i) { if (!p[i].empty() && (p[i][0] == '+' || p[i][0] == '-')) break; act += (act.empty() ? "" : "_") + p[i]; }
+    if (act.empty() && p.size() > 1) act = p[1];
+    static const struct { const char* key; const char* name; } kA[] = {
+        { "reloadregular", "Reload" }, { "reloadforced", "Reload (empty)" }, { "reloadreg", "Reload" }, { "reload", "Reload" },
+        { "shootcycle", "Shoot" }, { "shootoffset", "Shoot recoil" }, { "shootempty", "Shoot (last shot)" }, { "shoot", "Shoot" },
+        { "walk2sprint", "Walk to sprint" }, { "sprint2walk", "Sprint to walk" }, { "transaim2sprint", "Aim to sprint" },
+        { "sprintcycle", "Sprint" }, { "sprint", "Sprint" }, { "jog", "Jog" }, { "wlk", "Walk" }, { "walk", "Walk" }, { "run", "Run" },
+        { "draw", "Draw" }, { "holster", "Holster" }, { "unjam", "Unjam" }, { "inspect", "Inspect" }, { "melee", "Melee" },
+        { "btheaim", "Aim (breathing)" }, { "aim", "Aim" }, { "idle", "Idle" }, { "jump", "Jump" }, { "land", "Land" },
+        { "crh2std", "Crouch to stand" }, { "std2crh", "Stand to crouch" }, { "slide", "Slide" }, { "throw", "Throw" }, { "fire", "Fire" } };
+    std::string l = act, out;
+    for (auto& a : kA) if (l.find(a.key) != std::string::npos) { out = a.name; break; }
+    if (out.empty()) { out = act; for (auto& c : out) if (c == '_') c = ' '; if (!out.empty()) out[0] = (char)toupper((unsigned char)out[0]); }
+    std::string extra;
+    if (l.find("iron") != std::string::npos) extra += ", aiming";
+    if (l.find("zero") != std::string::npos) extra += ", last round";
+    if (l.find("zip") != std::string::npos) extra += ", zipline";
+    if (l.find("cover") != std::string::npos) extra += ", cover";
+    if (l.find("cr") != std::string::npos && out.find("rouch") == std::string::npos && (l.find("wlkcr") != std::string::npos || l.find("crouch") != std::string::npos || l.find("aimingcr") != std::string::npos)) extra += ", crouched";
+    if (l.find("rt") == l.size() - 2 && l.size() > 2) extra += ", right";
+    if (l.find("lt") == l.size() - 2 && l.size() > 2) extra += ", left";
+    if (!extra.empty()) out += " (" + extra.substr(2) + ")";
+    return out;
+}
+
+static bool byNameUi = true;
 static void WsAnimations(const WorkshopWeapon& w) {
     ImGui::TextWrapped("Custom first-person animations. 1) Tick Watch and press Clear. 2) Close the menu, hold this weapon and do "
                        "what you want to change (draw, idle, fire, reload, sprint). 3) Come back: the clips the game played are listed, "
                        "newest first. Export one to Blender (.glb), edit it, export it as glTF Binary and give it here. Note: a clip "
-                       "is shared by every weapon that uses it (the Ray Gun uses the Kimber's clips).");
+                       "belongs to an animation set shared by weapons; with Only for this weapon your version plays just for this one.");
     if (!ClipMonitorAvailable()) { ImGui::TextDisabled("Unavailable: the game's clip-start function wasn't found."); return; }
     bool cm = ClipMonitorEnabled();
     if (ImGui::Checkbox("Watch##wsa", &cm)) ClipMonitorSetEnabled(cm);
     ImGui::SameLine(); if (ImGui::Button("Clear##wsa")) ClipMonitorClear();
+    ImGui::SameLine(); ImGui::Checkbox("Sort by name", &byNameUi);
     ImGui::SameLine(); if (ImGui::Button("Open the exported folder")) {
         std::wstring dir = g_rootDir + L"dumps\\animations\\"; CreateDirectoryW((g_rootDir + L"dumps").c_str(), nullptr); CreateDirectoryW(dir.c_str(), nullptr);
         ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -2331,6 +2370,11 @@ static void WsAnimations(const WorkshopWeapon& w) {
     // one row per clip (first time seen), newest first
     std::vector<uint64_t> ids; std::set<uint64_t> seen;
     for (auto& e : ev) if (seen.insert(e.id).second) ids.push_back(e.id);
+    bool byName = byNameUi;
+    if (byName) std::stable_sort(ids.begin(), ids.end(), [](uint64_t a, uint64_t b) {
+        std::string x = FriendlyClip(a), y = FriendlyClip(b);
+        if (x.empty() != y.empty()) return y.empty();
+        return x < y; });
     // Which weapon stat a clip probably belongs to: the stat says when the action is done in gameplay, the clip
     // also has the arms settling back, so a clip runs a little longer than its stat (MG42 reload: stat 3.9 s, clip 4.17 s).
     struct Stat { const char* field; const char* label; float v; };
@@ -2368,7 +2412,18 @@ static void WsAnimations(const WorkshopWeapon& w) {
         ImGui::TextDisabled("A clip runs a little longer than its stat (the arms settle back at the end).");
     }
     static std::map<uint64_t, std::string> glbIn;
-    std::wstring modFiles = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\__unknown\\";
+    static bool onlyThis = true;
+    ImGui::Checkbox("Only for this weapon", &onlyThis);
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: your clip plays only while you hold this weapon; the weapon it borrows its\n"
+                                                  "animation set from keeps the game's clip. Off: replaces the clip for every weapon\n"
+                                                  "that uses it (the old way).");
+    // per weapon: files\fc4hook\clips\<item>_<clip>.ani (FC4Hook swaps it in while you hold this weapon)
+    // for everyone: files\__unknown\<clip>.ani (replaces the game's clip)
+    std::wstring modFiles = g_rootDir + L"mods\\" + Widen(w.mod) + (onlyThis ? L"\\files\\fc4hook\\clips\\" + Widen(std::to_string(w.ids[0])) + L"_"
+                                                                            : std::wstring(L"\\files\\__unknown\\"));
+    for (size_t k = 0; k < modFiles.size(); ++k) if (modFiles[k] == L'\\' && k > 2) CreateDirectoryW(modFiles.substr(0, k).c_str(), nullptr);
+    ImGui::TextDisabled("Holding: %s", GetState("weapon.probe", "?").c_str());
     auto resolve = [&](std::string p) {
         while (!p.empty() && (p.back() == '"' || p.back() == ' ')) p.pop_back(); while (!p.empty() && (p[0] == '"' || p[0] == ' ')) p.erase(0, 1);
         if (p.find(':') == std::string::npos) return g_rootDir + L"dumps\\animations\\" + Widen(p);
@@ -2396,12 +2451,13 @@ static void WsAnimations(const WorkshopWeapon& w) {
         std::wstring repl = modFiles + Widen(idb) + L".ani";
         bool replaced = GetFileAttributesW(repl.c_str()) != INVALID_FILE_ATTRIBUTES;
         float L = clipLen(id);
-        ImGui::Text("%s", idb); ImGui::SameLine();
-        if (L >= 0) { ImGui::Text("%.2f s", L); ImGui::SameLine(); }
+        std::string fr = FriendlyClip(id);
+        if (!fr.empty()) { if (L >= 0) ImGui::Text("%s (%.2f s)", fr.c_str(), L); else ImGui::Text("%s", fr.c_str()); ImGui::SameLine(); ImGui::TextDisabled("%s", idb); ImGui::SameLine(); }
+        else { ImGui::Text("%s", idb); ImGui::SameLine(); if (L >= 0) { ImGui::Text("%.2f s", L); ImGui::SameLine(); } }
         std::string gs = L > 0 ? guess(L) : "";
         if (!gs.empty()) { ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1), "%s", gs.c_str()); ImGui::SameLine(); }
         std::string lab = ClipLabelFor(id);
-        ImGui::TextDisabled("%s%s", lab.c_str(), replaced ? "  [replaced by this weapon's mod]" : "");
+        ImGui::TextDisabled("%s%s", lab.c_str(), replaced ? (onlyThis ? "  [custom for this weapon]" : "  [replaced for every weapon]") : "");
         if (ImGui::SmallButton("Export .glb")) { std::string m; ClipExportGlb(id, nullptr, &m); std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m; }
         ImGui::SameLine();
         std::string& g = glbIn[id];
@@ -2501,7 +2557,10 @@ static void WsModel(const WorkshopWeapon& w) {
                     std::string gp, m, err;
                     std::wstring filesDir = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\";
                     WsFit& ft = s_wsFit[key];
-                    if (ModelFromGlb(orig, objPath, filesDir, "graphics\\fc4hook\\" + safe + "\\", stem, ft.scale, ft.move, &gp, &m)) {
+                    // built on the bones of the weapon whose arm animations it uses (Arms tab), if set
+                    std::string bonesOf = on.find("_tp") != std::string::npos ? w.bonesTp : w.bones;
+                    std::string baseModel = !bonesOf.empty() && part == 0 ? bonesOf : orig;
+                    if (ModelFromGlb(baseModel, objPath, filesDir, "graphics\\fc4hook\\" + safe + "\\", stem, ft.scale, ft.move, &gp, &m)) {
                         if (WorkshopSet(w, part, v.offset, 'p', gp, &err)) m += "\nThe weapon now uses it. Restart the game to see it.";
                         else m += "\n(but couldn't point the weapon at it: " + err + ")";
                         s_wsParts[part].loaded = false;
@@ -2658,6 +2717,38 @@ static void WsAdvanced(const WorkshopWeapon& w) {
     ImGui::EndTable();
 }
 
+// Workshop > Arms: which weapon's first-person animation set (hold, reload, sprint...) this weapon uses.
+static void WsArms(const WorkshopWeapon& w) {
+    static std::string s_cur, s_msg; static uint64_t s_curFor = 0; static int pick = -1; static char f[64] = "";
+    if (s_curFor != w.ids[0]) { s_cur = WorkshopAnimSet(w); s_curFor = w.ids[0]; s_msg.clear(); }
+    ImGui::TextWrapped("The arms' animations (how it's held, drawn, reloaded, sprinted with) come from an animation set. "
+                       "Give this weapon another weapon's set. The gun's model should be built on a weapon with the same "
+                       "set, or it sits off-centre in the hands (Model tab: pick that weapon as the base).");
+    ImGui::Text("Now: %s", s_cur.c_str());
+    if (!w.bones.empty()) ImGui::TextDisabled("New models for it are built on %s (Model tab > Use my .glb)", w.bones.c_str());
+    const char* prev = pick >= 0 && pick < (int)s_weapons.size() ? s_weapons[pick].name.c_str() : "use the animations of...";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    if (ImGui::BeginCombo("##wsarms", prev, ImGuiComboFlags_HeightLarge)) {
+        ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##wsarmsf", "filter...", f, sizeof(f));
+        std::string fl = Lower(f);
+        for (int i = 0; i < (int)s_weapons.size(); ++i) {
+            if (!fl.empty() && Lower(s_weapons[i].name).find(fl) == std::string::npos) continue;
+            if (ImGui::Selectable((s_weapons[i].name + "##a" + s_weapons[i].id).c_str(), pick == i)) pick = i;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(pick < 0);
+    if (ImGui::Button("Use these animations")) {
+        uint64_t donor = strtoull(s_weapons[pick].id.c_str(), nullptr, 10);
+        WorkshopSetAnimSet(w, donor, &s_msg);
+        s_cur = WorkshopAnimSet(w);
+        s_wsListed = false;                              // re-read workshop.txt (bones=)
+    }
+    ImGui::EndDisabled();
+    if (!s_msg.empty()) ImGui::TextWrapped("%s", s_msg.c_str());
+}
+
 static void TabWorkshop() {
     ImGui::TextWrapped("Make a new weapon from one that's already in the game, then change its stats and model. "
                        "FC4Hook copies the weapon's three archetypes (item, properties, pickup) into a new mod under new ids "
@@ -2722,6 +2813,7 @@ static void TabWorkshop() {
     if (ImGui::BeginTabBar("wstabs")) {
         if (ImGui::BeginTabItem("Stats")) { WsStats(w); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Model")) { WsModel(w); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Arms")) { WsArms(w); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Animations")) { WsAnimations(w); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Advanced")) { WsAdvanced(w); ImGui::EndTabItem(); }
         ImGui::EndTabBar();

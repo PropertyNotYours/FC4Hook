@@ -1,6 +1,65 @@
 FC4Hook changelog
 =================
 
+1.12.1
+  - Workshop > Animations names the clips: "Reload (2.00 s)", "Shoot (0.67 s)", "Reload (empty, aiming)"... (from
+    File log > Find clip names), sorted by name (Sort by name), each clip once.
+  - Which weapon is in your hands: weapons given with the Armory / Give it to me are recognised (the slot check
+    didn't match). Per-weapon animations need the weapon given that way.
+
+1.12.0
+  - Per-weapon animations: Workshop > Animations > "Only for this weapon" (on by default) saves your clip as
+    files\fc4hook\clips\<weapon item>_<clip>.ani, and FC4Hook plays it instead of the game's clip only while
+    that weapon is in your hands. The weapon you borrowed the animation set from keeps its own clips.
+  - The Workshop script publishes the weapon in your hands (state weapon.item / weapon.probe; shown in the
+    Animations tab as "Holding").
+
+1.11.1
+  - Exported animation .glb: the gun's moving parts (CLIP, SLIDE, HAMMER...) are now bones of the same armature
+    as the arms (they were empties), so they pose, key, retarget and bake like every other bone.
+
+1.11.0
+  - Animations: weapon clips carry the gun's own animation (its CLIP / magazine, SLIDE, HAMMER... bones). Export
+    .glb now includes those parts as extra bones hanging from the right hand (named from the gun's model, e.g.
+    CLIP), and Use my .glb writes them back: animate the CLIP bone in Blender and the magazine (or the Ray Gun's
+    batteries) moves in game. Reads the short clip header the gun animations use.
+
+1.10.2
+  - Workshop > Arms also copies the chosen weapon's reload style (every weapon-properties setting with "reload"
+    in its name: magazine vs shell by shell...). Before, a pistol given the 1887's animations still reloaded
+    like a pistol. The first version of the properties file is kept as .orig.
+
+1.10.1
+  - Workshop > Arms remembers the chosen weapon's models (workshop.txt: animset=, bones=, bones_tp=). New models
+    made with Model > Use my .glb are then built on that weapon's bones, so they sit right in the hands with its
+    animations.
+
+1.10.0
+  - Workshop > Arms: give a weapon another weapon's first-person animation set (how it's held, drawn, reloaded,
+    sprinted with). A set is three things in the weapon's item file that must agree: the animation-type number
+    (picks the weapon's branch of the move data; 1911 = 4, D50 = 20), the animation package (kimber, deserteagle...)
+    and the gun skeleton. The first version of the file is kept as <id>.ark.fcb.orig.
+  - FCB files can now be rebuilt with text of a different length (back-references are fixed up).
+
+1.9.4
+  - Package add/remove logging (and PackageSwap) works from game start.
+
+1.9.3
+  - Snapshot arms only uses weapon clips (not generic no-weapon idles).
+
+1.9.2
+  - File log: "Snapshot arms" saves the player's first-person animation state to dumps\arms_snapshot_N.bin
+    (research: what makes a weapon use its animation set).
+
+1.9.1
+  - File log: "Find files using these clips" also takes id:<hex>,<hex> or num:<decimal> to find every game file
+    containing those 8-byte values.
+
+1.9.0
+  - dumps\file_log.txt starts fresh each game session (it could grow past 400 MB).
+  - [Debug] PackageSwap=from:to in fc4hook.ini: whenever animation package <from> is given to something, <to>
+    is given instead (research tool for weapon animation sets).
+
 1.8.9
   - File log: [ClipStart] lines also say where in the animation state the current weapon's name hash sits.
 

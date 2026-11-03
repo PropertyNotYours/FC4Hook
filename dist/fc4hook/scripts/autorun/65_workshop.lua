@@ -74,11 +74,42 @@ function W.preloadAll()
   end
 end
 
+
+-- Which weapon item is in the player's hands (for per-weapon animations): the equipped weapon
+-- entity, matched against the weapon in each inventory slot. Published as state "weapon.item".
+W.heldAt = 0
+function W.held(me)
+  local ok, eq = pcall(CAPI_Pawn.GetEquippedWeaponEntityID, me)
+  if not ok or eq == nil then return nil, "no equipped" end
+  eq = tostring(eq)
+  local A = FC4Armory
+  if A and A.given and A.given[eq] then return A.given[eq], "given by the Armory" end
+  for slot = 0, 15 do
+    local ok1, id = pcall(CAPI_Pawn.GetWeaponIdInSlot, me, slot)
+    if ok1 and id ~= nil and tostring(id) ~= "0" and tostring(id) ~= W.INVALID then
+      local ok2, ent = pcall(CAPI_Pawn.GetWeaponEntityID, me, id)
+      if ok2 and ent ~= nil and tostring(ent) == eq then return tostring(id), "slot " .. slot end
+      local ok3, ent2 = pcall(CAPI_Pawn.GetWeaponEntityID, me, slot)
+      if ok3 and ent2 ~= nil and tostring(ent2) == eq then return tostring(id), "slot " .. slot end
+    end
+  end
+  return nil, "equipped " .. eq .. ": give it with the Armory / Give it to me so FC4Hook knows which weapon it is"
+end
+
 function W.tick()
   local me = FC4.me and FC4.me()
   local inWorld = me ~= nil and FC4Cheats and FC4Cheats.pos and FC4Cheats.pos() ~= nil
   if not inWorld then W.inWorld = false W.loaded = {} W.regOk = false return end
   if not W.inWorld then W.inWorld = true W.regOk = false W.regTries = 0 W.regAt = 0 W.preloadAll() end
+  if os.clock() >= W.heldAt then
+    W.heldAt = os.clock() + 0.25
+    local id, why = W.held(me)
+    if id ~= W.heldItem then
+      W.heldItem = id
+      ModSetState("weapon.item", id or "")
+      ModSetState("weapon.probe", (id or "-") .. " (" .. tostring(why) .. ")")
+    end
+  end
   -- the game fills its weapon table while the world loads: keep trying for a minute
   if not W.regOk and W.regTries < 30 and os.clock() >= (W.regAt or 0) then
     W.regTries = W.regTries + 1

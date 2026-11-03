@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <functional>
 #include <array>
 #include <algorithm>
 #include "minijson.h"
@@ -81,12 +82,15 @@ struct Clip {
     std::vector<std::vector<Q>> rot; std::vector<std::vector<V>> pos;
 };
 
-static size_t Off(const Bytes& d, int lo, int hi) { return ((size_t)d[C + hi] << 16) | r16(d, C + lo); }
+// Short header (track word bit 0x8000, used by the gun clips nested in weapon clips): the section
+// offsets sit 6 bytes earlier (0x22.. instead of 0x28..) and have no high bytes.
+static bool ShortHdr(const Bytes& d) { return d.size() >= C + 6 && (r16(d, C + 4) & 0x8000); }
+static size_t Off(const Bytes& d, int lo, int hi) { return ShortHdr(d) ? (lo >= 0x38 ? 0 : r16(d, C + lo - 6)) : (((size_t)d[C + hi] << 16) | r16(d, C + lo)); }
 
 static bool Decode(const Bytes& d, Clip& c, std::string* err) {
     if (d.size() < C + 0x50 || memcmp(&d[C], "aNi", 3) != 0) { *err = "not an animation clip (no aNi)"; return false; }
     uint16_t th = r16(d, C + 4);
-    if (th & 0xc000) { *err = "this clip uses a header layout FC4Hook doesn't read yet"; return false; }
+    if (th & 0x4000) { *err = "this clip uses a header layout FC4Hook doesn't read yet"; return false; }
     c.tracks = th & 0xfff; c.frames = r16(d, C + 6); c.length = rf(d, C + 8);
     int keys = c.frames + 1, nblocks = (keys + 7) / 8;
     size_t foff = r32(d, C + 0x10), hoff = r32(d, C + 0x14);
@@ -185,6 +189,42 @@ static bool Skeleton(const Bytes& x, std::vector<Node>& nodes, std::string* err)
     *err = "couldn't read the skeleton (NODE list) of the model"; return false;
 }
 
+
+// ------------------------------------------------------------------ nested clips (section 0x38)
+// A weapon clip carries the gun's own animation: section 0x38 = u32 count, then count entries of
+// 0x80 bytes: +8 u32 offset of that entry's aNi clip (from the entry), +0x14 u32 hash + name[32]
+// (the weapon's package, e.g. kimber), +0x38 u32 hash + name[32] (the hand it hangs from, RightHand).
+// Entry 0 moves the gun's bones (CLIP, SLIDE, HAMMER...); entry 1 is the gun's root in the other hand.
+struct NestedClip { size_t entry, clip, end; std::string pkg, bone; };
+struct Nested { size_t sec = 0, secEnd = 0; std::vector<NestedClip> e; };
+static std::string CStr(const Bytes& d, size_t o, size_t n) { std::string r; for (size_t i = 0; i < n && o + i < d.size() && d[o + i]; ++i) r += (char)d[o + i]; return r; }
+static bool ParseNested(const Bytes& d, Nested& n) {
+    if (d.size() < C + 0x50) return false;
+    size_t o = Off(d, 0x38, 0x46); if (!o) return false;
+    static const int F[10][2] = { { 0x28, 0x3e }, { 0x2a, 0x3f }, { 0x2c, 0x40 }, { 0x2e, 0x41 }, { 0x30, 0x42 }, { 0x32, 0x43 }, { 0x34, 0x44 }, { 0x36, 0x45 }, { 0x38, 0x46 }, { 0x3a, 0x47 } };
+    size_t next = d.size() - C;
+    for (auto& f : F) { size_t x = Off(d, f[0], f[1]); if (x > o && x < next) next = x; }
+    for (size_t x : { (size_t)r32(d, C + 0x10), (size_t)r32(d, C + 0x14) }) if (x > o && x < next) next = x;
+    n.sec = C + o; n.secEnd = C + next;
+    uint32_t cnt = r32(d, n.sec);
+    if (cnt == 0 || cnt > 16 || n.sec + 4 + 0x80 * cnt > n.secEnd) return false;
+    for (uint32_t k = 0; k < cnt; ++k) {
+        NestedClip c; c.entry = n.sec + 4 + 0x80 * k; c.clip = c.entry + r32(d, c.entry + 8);
+        if (c.clip + 0x20 > d.size() || memcmp(&d[c.clip], "aNi", 3) != 0) return false;
+        c.pkg = CStr(d, c.entry + 0x18, 32); c.bone = CStr(d, c.entry + 0x3c, 32);
+        n.e.push_back(c);
+    }
+    for (size_t k = 0; k < n.e.size(); ++k) n.e[k].end = k + 1 < n.e.size() && n.e[k + 1].clip > n.e[k].clip ? n.e[k + 1].clip : d.size();
+    return true;
+}
+// a nested clip as a stand-alone clip file (decoders expect the 0x18-byte file header first)
+// (its flag and track-hash tables sit at the end of the weapon clip, addressed from the nested aNi,
+// so it runs to the end of the file)
+static Bytes NestedAsFile(const Bytes& d, const NestedClip& c) { Bytes b(C, 0); b.insert(b.end(), d.begin() + c.clip, d.end()); return b; }
+static const char* kGunBoneNames[] = { "FRAME", "CLIP", "SLIDE", "HAMMER", "Hammer", "BULLET", "CLIP_BULLET", "SLIDE_LOCK", "TRIGGER", "BOLT",
+    "MAG", "MAGAZINE", "BATTERY", "Root", "root", "CHARGING_HANDLE", "BOLT_CARRIER", "DUST_COVER", "SELECTOR", "LEVER", "SHELL", "SHELLS",
+    "CYLINDER", "BARREL", "PUMP", "STOCK", "SAFETY", "COVER", "BELT", "FEED_COVER", "ARROW", "STRING", "LIMB_TOP", "LIMB_BOTTOM", "DRUM", nullptr };
+
 static Q qmul(Q a, Q b) {
     return { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
              a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
@@ -194,7 +234,7 @@ static float qdot(Q a, Q b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b
 // ------------------------------------------------------------------ clip -> .glb
 static void put32(Bytes& b, uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back((uint8_t)(v >> (8 * i))); }
 
-bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* report, uint64_t clipId) {
+bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* report, uint64_t clipId, const Bytes* gunSkel = nullptr) {
     std::string& R = *report;
     Clip c; std::vector<Node> nodes;
     if (!Decode(clipFile, c, &R) || !Skeleton(skel, nodes, &R)) return false;
@@ -221,7 +261,41 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
         snprintf(b, sizeof(b), "%s{\"bufferView\":%d,\"componentType\":5126,\"count\":%zu,\"type\":\"%s\"%s}", nAcc ? "," : "", nView, v.size() / comp, type, mm.c_str()); ac += b;
         ++nView; return nAcc++;
     };
-    // nodes: 0 = FC4_ROOT (Z-up -> Y-up), 1.. = skeleton
+    // the gun's own animation (nested clip 0): its bones become extra nodes hanging from the hand
+    struct GunNode { std::string name; int parent; Q q; V t; int track; };   // parent: -1-k = arm node k, else gun node index
+    std::vector<GunNode> gun; Clip gc; bool haveGun = false;
+    {
+        Nested ns;
+        if (ParseNested(clipFile, ns) && !ns.e.empty()) {
+            std::string e2;
+            int hand = -1; for (size_t k = 0; k < nodes.size(); ++k) if (nodes[k].name == ns.e[0].bone) hand = (int)k;
+            if (hand >= 0 && Decode(NestedAsFile(clipFile, ns.e[0]), gc, &e2)) {
+                haveGun = true;
+                std::map<uint32_t, std::string> known;
+                for (int i = 0; kGunBoneNames[i]; ++i) known[Crc32(kGunBoneNames[i], strlen(kGunBoneNames[i]))] = kGunBoneNames[i];
+                std::vector<Node> gn; std::string e3; std::map<uint32_t, int> gidx;
+                if (gunSkel && Skeleton(*gunSkel, gn, &e3)) for (size_t k = 0; k < gn.size(); ++k) { known[Crc32(gn[k].name.data(), gn[k].name.size())] = gn[k].name; gidx[Crc32(gn[k].name.data(), gn[k].name.size())] = (int)k; }
+                std::map<int, int> trackOfGunSkel;
+                for (int t = 0; t < gc.tracks; ++t) {
+                    GunNode g; g.track = t; g.parent = -1 - hand;
+                    auto it = known.find(gc.hashes[t]);
+                    char nb[32]; snprintf(nb, sizeof(nb), "gun_%08x", gc.hashes[t]);
+                    g.name = it != known.end() ? it->second : nb;
+                    g.q = gc.rot[t].empty() ? Q{ 0, 0, 0, 1 } : gc.rot[t][0];
+                    g.t = gc.pos[t].empty() ? V{ 0, 0, 0 } : gc.pos[t][0];
+                    auto gi = gidx.find(gc.hashes[t]); if (gi != gidx.end()) trackOfGunSkel[gi->second] = (int)gun.size();
+                    gun.push_back(g);
+                }
+                // hierarchy from the gun's skeleton, where known
+                for (auto& kv : trackOfGunSkel) {
+                    int p = gn[kv.first].parent;
+                    while (p >= 0 && !trackOfGunSkel.count(p)) p = gn[p].parent;
+                    if (p >= 0) gun[kv.second].parent = trackOfGunSkel[p];
+                }
+            }
+        }
+    }
+    // nodes: 0 = FC4_ROOT (Z-up -> Y-up), 1.. = skeleton, then the gun's bones
     std::string nj = "{\"name\":\"FC4_ROOT\",\"rotation\":[-0.70710678,0,0,0.70710678],\"children\":[";
     bool first = true;
     for (size_t k = 0; k < nodes.size(); ++k) if (nodes[k].parent < 0) { nj += (first ? "" : ",") + std::to_string(k + 1); first = false; }
@@ -233,6 +307,16 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
         snprintf(b, sizeof(b), ",{\"name\":\"%s\",\"rotation\":[%.9g,%.9g,%.9g,%.9g],\"translation\":[%.9g,%.9g,%.9g]", name.c_str(), n.q.x, n.q.y, n.q.z, n.q.w, n.t.x, n.t.y, n.t.z);
         nj += b;
         std::string ch; for (size_t j = 0; j < nodes.size(); ++j) if (nodes[j].parent == (int)k) ch += (ch.empty() ? "" : ",") + std::to_string(j + 1);
+        for (size_t j = 0; j < gun.size(); ++j) if (gun[j].parent == -1 - (int)k) ch += (ch.empty() ? "" : ",") + std::to_string(nodes.size() + 1 + j);
+        if (!ch.empty()) nj += ",\"children\":[" + ch + "]";
+        nj += "}";
+    }
+    for (size_t k = 0; k < gun.size(); ++k) {
+        const GunNode& g = gun[k];
+        char b[512];
+        snprintf(b, sizeof(b), ",{\"name\":\"%s\",\"rotation\":[%.9g,%.9g,%.9g,%.9g],\"translation\":[%.9g,%.9g,%.9g],\"extras\":{\"fc4gun\":1}", g.name.c_str(), g.q.x, g.q.y, g.q.z, g.q.w, g.t.x, g.t.y, g.t.z);
+        nj += b;
+        std::string ch; for (size_t j = 0; j < gun.size(); ++j) if (gun[j].parent == (int)k) ch += (ch.empty() ? "" : ",") + std::to_string(nodes.size() + 1 + j);
         if (!ch.empty()) nj += ",\"children\":[" + ch + "]";
         nj += "}";
     }
@@ -262,6 +346,25 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
         for (int i = 0; i < 3; ++i) inv[12 + i] = -(inv[0 + i] * m[12] + inv[4 + i] * m[13] + inv[8 + i] * m[14]);
         inv[15] = 1;
         for (double v : inv) ibm.push_back((float)v);
+    }
+    // the gun's parts are joints too (so Blender makes them bones of the same armature)
+    {
+        std::vector<std::array<double, 16>> GW(gun.size()); std::vector<int> done(gun.size(), 0);
+        std::function<void(int)> world = [&](int j) {
+            if (done[j]) return;
+            done[j] = 1;
+            auto L = mat(gun[j].q, gun[j].t);
+            if (gun[j].parent < 0) GW[j] = mul(W[-1 - gun[j].parent], L);
+            else { world(gun[j].parent); GW[j] = mul(GW[gun[j].parent], L); }
+        };
+        for (size_t j = 0; j < gun.size(); ++j) {
+            world((int)j);
+            const auto& m = GW[j]; std::array<double, 16> inv{};
+            for (int i = 0; i < 3; ++i) for (int k = 0; k < 3; ++k) inv[k * 4 + i] = m[i * 4 + k];
+            for (int i = 0; i < 3; ++i) inv[12 + i] = -(inv[0 + i] * m[12] + inv[4 + i] * m[13] + inv[8 + i] * m[14]);
+            inv[15] = 1;
+            for (double v : inv) ibm.push_back((float)v);
+        }
     }
     int ibmAcc = acc(ibm, 16, "MAT4", false);
     // tagged files: key k sits exactly on Blender frame k (24 fps) so Blender never resamples it; FromGlb converts back
@@ -295,10 +398,38 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
             ++ns;
         }
     }
+    if (haveGun) {
+        int gkeys = gc.frames + 1;
+        for (size_t j = 0; j < gun.size(); ++j) {
+            int t = gun[j].track, node = (int)(nodes.size() + 1 + j);
+            // the gun clip has its own key count; sample it onto the arms' keys
+            auto at = [&](int k) { return gkeys <= 1 ? 0 : std::min(gkeys - 1, (int)lroundf((float)k * (gkeys - 1) / std::max(1, keys - 1))); };
+            if (!gc.rot[t].empty()) {
+                std::vector<float> v; Q prev{ 0, 0, 0, 1 };
+                for (int k = 0; k < keys; ++k) {
+                    Q q = gc.rot[t][gc.rot[t].size() == 1 ? 0 : std::min(at(k), (int)gc.rot[t].size() - 1)];
+                    if (k && qdot(q, prev) < 0) q = { -q.x, -q.y, -q.z, -q.w };
+                    prev = q; v.insert(v.end(), { q.x, q.y, q.z, q.w });
+                }
+                int a = acc(v, 4, "VEC4", false);
+                samp += (ns ? "," : "") + std::string("{\"input\":") + std::to_string(tAcc) + ",\"output\":" + std::to_string(a) + ",\"interpolation\":\"LINEAR\"}";
+                chan += (ns ? "," : "") + std::string("{\"sampler\":") + std::to_string(ns) + ",\"target\":{\"node\":" + std::to_string(node) + ",\"path\":\"rotation\"}}";
+                ++ns;
+            }
+            if (!gc.pos[t].empty()) {
+                std::vector<float> v;
+                for (int k = 0; k < keys; ++k) { V p = gc.pos[t][gc.pos[t].size() == 1 ? 0 : std::min(at(k), (int)gc.pos[t].size() - 1)]; v.insert(v.end(), { p.x, p.y, p.z }); }
+                int a = acc(v, 3, "VEC3", false);
+                samp += (ns ? "," : "") + std::string("{\"input\":") + std::to_string(tAcc) + ",\"output\":" + std::to_string(a) + ",\"interpolation\":\"LINEAR\"}";
+                chan += (ns ? "," : "") + std::string("{\"sampler\":") + std::to_string(ns) + ",\"target\":{\"node\":" + std::to_string(node) + ",\"path\":\"translation\"}}";
+                ++ns;
+            }
+        }
+    }
     // the clip id travels with the file (Blender keeps the animation name as the action name): FC4_<16 hex>
     char tagb[32]; snprintf(tagb, sizeof(tagb), "FC4_%016llx", (unsigned long long)clipId);
     std::string tag = clipId ? tagb : "clip";
-    std::string joints; for (size_t k = 0; k < nodes.size(); ++k) joints += (k ? "," : "") + std::to_string(k + 1);
+    std::string joints; for (size_t k = 0; k < nodes.size() + gun.size(); ++k) joints += (k ? "," : "") + std::to_string(k + 1);
     std::string json = "{\"asset\":{\"version\":\"2.0\",\"generator\":\"FC4Hook\",\"extras\":{\"fc4clip\":\"" + tag + "\"}},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[" + nj +
         "],\"skins\":[{\"name\":\"FC4_Skeleton\",\"joints\":[" + joints + "],\"inverseBindMatrices\":" + std::to_string(ibmAcc) + ",\"skeleton\":1}]" +
         ",\"animations\":[{\"name\":\"" + tag + "\",\"samplers\":[" + samp + "],\"channels\":[" + chan + "]}]" +
@@ -309,7 +440,8 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
     put32(glb, 0x46546C67); put32(glb, 2); put32(glb, (uint32_t)(12 + 8 + json.size() + 8 + bin.size()));
     put32(glb, (uint32_t)json.size()); put32(glb, 0x4E4F534A); glb.insert(glb.end(), json.begin(), json.end());
     put32(glb, (uint32_t)bin.size()); put32(glb, 0x004E4942); glb.insert(glb.end(), bin.begin(), bin.end());
-    char b[200]; snprintf(b, sizeof(b), "%d frames (%.2f s), %d of %d bones%s", c.frames, c.length, matched, c.tracks, additive ? ", additive layer (shown on the rest pose)" : "");
+    char b[240]; snprintf(b, sizeof(b), "%d frames (%.2f s), %d of %d bones%s%s", c.frames, c.length, matched, c.tracks, additive ? ", additive layer (shown on the rest pose)" : "",
+                          haveGun ? (", plus the gun's " + std::to_string(gun.size()) + " moving parts").c_str() : "");
     R = b;
     return true;
 }
@@ -448,14 +580,19 @@ template <class F> static Bytes AnimRegion(int keys, F block) {
     return out;
 }
 
-bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& out, std::string* report, int bits = 16) {
+bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& out, std::string* report, int bits = 16,
+             const std::map<uint32_t, std::string>* nameOverride = nullptr, bool nested = true) {
     std::string& R = *report;
     if (tmpl.size() < C + 0x50 || memcmp(&tmpl[C], "aNi", 3) != 0) { R = "the clip to replace isn't an animation clip"; return false; }
-    if (r16(tmpl, C + 4) & 0xc000) { R = "the clip to replace uses a header layout FC4Hook doesn't write yet"; return false; }
+    if (r16(tmpl, C + 4) & 0x4000) { R = "the clip to replace uses a header layout FC4Hook doesn't write yet"; return false; }
+    bool shortHdr = ShortHdr(tmpl);
     Clip orig; if (!Decode(tmpl, orig, &R)) return false;
-    std::vector<Node> nodes; if (!Skeleton(skel, nodes, &R)) return false;
-    std::map<uint32_t, std::string> nameOf;
-    for (auto& n : nodes) nameOf[Crc32(n.name.data(), n.name.size())] = n.name;
+    std::vector<Node> nodes; std::map<uint32_t, std::string> nameOf;
+    if (nameOverride) nameOf = *nameOverride;
+    else {
+        if (!Skeleton(skel, nodes, &R)) return false;
+        for (auto& n : nodes) nameOf[Crc32(n.name.data(), n.name.size())] = n.name;
+    }
     GlbAnim ga; if (!ReadGlbAnim(glbFile, ga, &R)) return false;
     int ntr = orig.tracks;
     float fps = orig.length > 0 && orig.frames > 0 ? orig.frames / orig.length : 30.f;
@@ -558,6 +695,7 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
     for (auto& no : newOff) {
         if (no.first == 100) memcpy(&body[0x10], &no.second, 4);
         else if (no.first == 101) memcpy(&body[0x14], &no.second, 4);
+        else if (shortHdr) { if (no.second > 0xffff) { R = "the gun clip got too big for its short header"; return false; } uint16_t lo = (uint16_t)no.second; memcpy(&body[F[no.first][0] - 6], &lo, 2); }
         else { uint16_t lo = (uint16_t)no.second; memcpy(&body[F[no.first][0]], &lo, 2); body[F[no.first][1]] = (uint8_t)(no.second >> 16); }
     }
     auto w16 = [&](size_t o, uint16_t v) { memcpy(&body[o], &v, 2); };
@@ -571,12 +709,42 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
     char b[240];
     snprintf(b, sizeof(b), "%d frames (%.2f s), %d bones from the .glb, %zu animated rotations, %zu animated positions", frames, length, fromGlb, arot.size(), apos.size());
     R = b;
+    if (nested) {
+        // the gun's own animation: if the .glb animates the gun's bones (exported with the clip as
+        // CLIP, SLIDE... / gun_<hash>), rewrite nested clip 0 from them; the section is rebuilt and
+        // everything after it moved (by a multiple of 16)
+        Nested ns;
+        if (ParseNested(out, ns) && !ns.e.empty()) {
+            std::map<uint32_t, std::string> gnames;
+            for (auto& kv : ga.rot) gnames[Crc32(kv.first.data(), kv.first.size())] = kv.first;
+            for (auto& kv : ga.pos) gnames[Crc32(kv.first.data(), kv.first.size())] = kv.first;
+            for (auto& kv : std::map<uint32_t, std::string>(gnames)) {     // gun_<hash> names stand for that hash
+                if (kv.second.size() == 12 && kv.second.compare(0, 4, "gun_") == 0) gnames[(uint32_t)strtoul(kv.second.c_str() + 4, nullptr, 16)] = kv.second;
+            }
+            Bytes nf = NestedAsFile(out, ns.e[0]), nout; std::string nr;
+            if (FromGlb(nf, glbFile, skel, nout, &nr, bits, &gnames, false)) {
+                // the new gun clip goes at the end of the file and entry 0 points at it; nothing else moves
+                // (the other nested clip and the tables keep their places)
+                Bytes n2 = out;
+                while ((n2.size() - C) % 16) n2.push_back(0);
+                size_t at = n2.size();
+                n2.insert(n2.end(), nout.begin() + C, nout.end());
+                uint32_t rel = (uint32_t)(at - ns.e[0].entry);
+                memcpy(&n2[ns.e[0].entry + 8], &rel, 4);
+                Clip chk2; std::string e3; Nested ns2;
+                if (Decode(n2, chk2, &e3) && ParseNested(n2, ns2) && Decode(NestedAsFile(n2, ns2.e[0]), chk2, &e3)) { out.swap(n2); R += "; gun parts: " + nr; }
+                else R += "; (gun parts not written: " + e3 + ")";
+            }
+        }
+    }
     return true;
 }
 
 } // namespace ani
 
-bool AniClipToGlb(const Bytes& clip, const Bytes& skel, Bytes& glb, std::string* report, uint64_t clipId) { return ani::ToGlb(clip, skel, glb, report, clipId); }
+bool AniClipToGlb(const Bytes& clip, const Bytes& skel, Bytes& glb, std::string* report, uint64_t clipId, const Bytes* gunSkel) { return ani::ToGlb(clip, skel, glb, report, clipId, gunSkel); }
+// the weapon package a weapon clip's gun animation belongs to (e.g. kimber), "" if none
+std::string AniClipWeapon(const Bytes& clip) { ani::Nested n; return ani::ParseNested(clip, n) && !n.e.empty() ? n.e[0].pkg : std::string(); }
 bool AniGlbClipId(const Bytes& glb, uint64_t* id) { return ani::GlbClipId(glb, id); }
 bool AniClipFromGlb(const Bytes& tmpl, const Bytes& glb, const Bytes& skel, Bytes& out, std::string* report) { return ani::FromGlb(tmpl, glb, skel, out, report); }
 

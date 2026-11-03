@@ -487,6 +487,8 @@ static void* hk_FindRes(void* mgr, uint64_t* idp) {
 // +0xe0 add, +0xe8 remove; FUN_181806b20 adds additive_offset / vehicle_enter that way). Hook
 // that function, and through the object it gets, the add/remove methods: logs every package
 // added to / removed from a character, with the calling code.
+typedef void* (*CreateRes_t)(void* mgr, uint64_t* id, void* type, uint8_t flag);
+static CreateRes_t o_CreateRes = nullptr;
 typedef void (*PkgOp_t)(void* self, void* pkg);
 static PkgOp_t o_PkgAdd = nullptr, o_PkgRemove = nullptr;
 typedef void (*AddDefaults_t)(void* a, void* animObj);
@@ -510,7 +512,30 @@ static void LogPkgOp(const char* what, void* self, void* pkg) {
     char ob[32]; snprintf(ob, sizeof(ob), " to %p", self);
     AddLogLine(std::string(idb) + "  [" + what + "] " + nm + ob + "  from FC64" + chain);
 }
-static void hk_PkgAdd(void* self, void* pkg) { LogPkgOp("PackageAdd", self, pkg); o_PkgAdd(self, pkg); }
+// [Debug] PackageSwap=kimber:a99 in fc4hook.ini: whenever package "kimber" is added to anything,
+// add package "a99" instead (test: does the held weapon's package pick the arms' clips?).
+static uint64_t s_swapFrom = 0, s_swapTo = 0;
+static void* PackageById(uint64_t id) {
+    uintptr_t base = FC64Base();
+    void* mgr = *(void**)(base + 0x2dd81b8);                         // DAT_182dd81b8: resource manager
+    if (!mgr || !o_FindRes || !o_CreateRes) return nullptr;
+    uint64_t k = id;
+    void* r = o_FindRes(mgr, &k);
+    if (!r) {
+        typedef uint8_t* (*TypeDesc_t)();
+        uint8_t* td = ((TypeDesc_t)(base + 0x5088a0))();             // FUN_1805088a0: CAnimationPackageResource type
+        r = o_CreateRes(mgr, &k, td + 0x18, 0);
+    }
+    return r;
+}
+static void hk_PkgAdd(void* self, void* pkg) {
+    LogPkgOp("PackageAdd", self, pkg);
+    if (s_swapFrom && pkg && MemReadable((uintptr_t)pkg + 0x10, 8) && *(uint64_t*)((uintptr_t)pkg + 0x10) == s_swapFrom) {
+        void* alt = PackageById(s_swapTo);
+        if (alt) { Log("PackageSwap: %016llx -> %016llx on %p", (unsigned long long)s_swapFrom, (unsigned long long)s_swapTo, self); pkg = alt; }
+    }
+    o_PkgAdd(self, pkg);
+}
 static void hk_PkgRemove(void* self, void* pkg) { LogPkgOp("PackageRemove", self, pkg); o_PkgRemove(self, pkg); }
 static void hk_AddDefaults(void* a, void* animObj) {
     if (animObj && !s_pkgOpsHooked.exchange(true)) {
@@ -520,9 +545,6 @@ static void hk_AddDefaults(void* a, void* animObj) {
     }
     o_AddDefaults(a, animObj);
 }
-
-typedef void* (*CreateRes_t)(void* mgr, uint64_t* id, void* type, uint8_t flag);
-static CreateRes_t o_CreateRes = nullptr;
 
 static void* hk_CreateRes(void* mgr, uint64_t* idp, void* type, uint8_t flag) {
     void* obj = o_CreateRes(mgr, idp, type, flag);
@@ -584,6 +606,21 @@ void FileLogInstall() {
     uintptr_t q = FindPattern("FC64.dll", "4C 8B 59 48 4C 8B 0A 4C 8B D1 4D 85 DB 74 ?? B8 5F 0B 4E 83 45 8B C1 41 81 F0 EF BE AD DE");
     if (!q) LogL(LOG_WARN, "file log: resource-lookup function not found; package use log unavailable");
     else if (!CreateHook((void*)q, (void*)hk_FindRes, (void**)&o_FindRes)) { LogL(LOG_WARN, "file log: lookup hook failed"); o_FindRes = nullptr; }
+    {
+        wchar_t b[128] = {}; GetPrivateProfileStringW(L"Debug", L"PackageSwap", L"", b, 128, IniPath().c_str());
+        std::string v = Narrow(b); size_t c = v.find(':');
+        if (c != std::string::npos) { s_swapFrom = FileId(v.substr(0, c).c_str()); s_swapTo = FileId(v.substr(c + 1).c_str());
+            LogL(LOG_INFO, "PackageSwap %s -> %s", v.substr(0, c).c_str(), v.substr(c + 1).c_str()); }
+    }
+    // hook the package add/remove methods directly from the start (FC64+0xcf5e0 / +0xcf810, patch 1.10),
+    // so packages given while the world loads are seen (and swapped) too
+    {
+        uintptr_t fb = FC64Base();
+        if (fb && MemReadable(fb + 0xcf5e0, 16) && MemReadable(fb + 0xcf810, 16)) {
+            if (CreateHook((void*)(fb + 0xcf5e0), (void*)hk_PkgAdd, (void**)&o_PkgAdd) &&
+                CreateHook((void*)(fb + 0xcf810), (void*)hk_PkgRemove, (void**)&o_PkgRemove)) s_pkgOpsHooked = true;
+        }
+    }
     uintptr_t a = FindPattern("FC64.dll", "40 56 48 83 EC 30 48 8B F2 E8 ?? ?? ?? ?? 48 85 F6 0F 84 32 01 00 00 48 89 5C 24 40 48 89 6C 24 58 48 8D 15");
     if (!a) LogL(LOG_WARN, "file log: package-defaults function not found");
     else if (!CreateHook((void*)a, (void*)hk_AddDefaults, (void**)&o_AddDefaults)) o_AddDefaults = nullptr;
@@ -603,8 +640,112 @@ static std::deque<ClipEvent> s_clips;
 static std::atomic<uint64_t> s_clipSerial{ 0 };
 static std::map<uint64_t, std::string> s_clipLabels;
 
+
+static std::mutex s_snapMx;
+static void* s_snapCtx = nullptr; static void* s_snapNode = nullptr; static uint64_t s_snapClip = 0; static std::string s_snapName;
+// Snapshot arms: write the newest first-person clip's animation state (the context the game
+// passed, 0x3000 bytes, and 0x400 bytes behind every pointer in its first 0x1000) to
+// dumps\arms_snapshot_<n>.bin as records  u64 address, u32 size, bytes  (first record: FC64 base, size 0;
+// second: clip id, size = name length, name).
+bool ArmsSnapshot(std::string* msg) {
+    void* ctx; void* node; uint64_t clip; std::string nm;
+    { std::lock_guard<std::mutex> lk(s_snapMx); ctx = s_snapCtx; node = s_snapNode; clip = s_snapClip; nm = s_snapName; }
+    if (!ctx) { *msg = "No first-person clip seen yet (tick Record file paths, draw a gun)."; return false; }
+    std::vector<uint8_t> out;
+    auto put = [&](uint64_t a, const void* p, uint32_t n) { out.insert(out.end(), (uint8_t*)&a, (uint8_t*)&a + 8); out.insert(out.end(), (uint8_t*)&n, (uint8_t*)&n + 4); if (n) out.insert(out.end(), (const uint8_t*)p, (const uint8_t*)p + n); };
+    put((uint64_t)FC64Base(), nullptr, 0);
+    put(clip, nm.data(), (uint32_t)nm.size());
+    auto region = [&](uintptr_t a, uint32_t n) {
+        while (n >= 0x40 && !MemReadable(a, n)) n /= 2;
+        if (n >= 0x40) put(a, (void*)a, n);
+        return n >= 0x40 ? n : 0u;
+    };
+    uint32_t cn = region((uintptr_t)ctx, 0x3000);
+    region((uintptr_t)node, 0x200);
+    std::set<uintptr_t> seen;
+    for (uint32_t o = 0; o + 8 <= cn && o < 0x1000; o += 8) {
+        uintptr_t q = *(uintptr_t*)((uintptr_t)ctx + o);
+        if (q < 0x10000 || (q & 7) || q > 0x7fffffffffffULL || !seen.insert(q).second) continue;
+        uintptr_t b = FC64Base(); if (q >= b && q < b + 0x4000000) continue;
+        region(q, 0x400);
+    }
+    static int n = 0;
+    char fn[64]; snprintf(fn, sizeof(fn), "dumps\\arms_snapshot_%d.bin", ++n);
+    FILE* f = _wfopen((g_rootDir + Widen(fn)).c_str(), L"wb");
+    if (!f) { *msg = "can't write the snapshot"; return false; }
+    fwrite(out.data(), 1, out.size(), f); fclose(f);
+    *msg = std::string("Saved ") + fn + " (" + nm + ", " + std::to_string(out.size() / 1024) + " KB).";
+    return true;
+}
+
+
+// PER-WEAPON CLIPS: mods\<mod>\files\fc4hook\clips\<item id>_<clip id hex>.ani replaces clip <clip id>
+// only while weapon item <item id> is in the player's hands (state "weapon.item", set by
+// 65_workshop.lua). At clip start the node's animation resource (+0x28) is swapped for ours for
+// that one call; the node keeps its own. Ours are loaded through the resource manager like any clip
+// (CAnimationResource type FC64+0x4f4030) and kept alive.
+struct ClipOv { uint64_t item, orig, nid; void* res; };
+static std::vector<ClipOv> s_ov;
+static bool s_ovScanned = false;
+static void ClipOvScan() {
+    s_ovScanned = true;
+    WIN32_FIND_DATAW md;
+    HANDLE hm = FindFirstFileW((g_rootDir + L"mods\\*").c_str(), &md);
+    if (hm == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(md.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || md.cFileName[0] == L'.') continue;
+        std::wstring dir = g_rootDir + L"mods\\" + md.cFileName + L"\\files\\fc4hook\\clips\\";
+        WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((dir + L"*.ani").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            std::string n = Narrow(fd.cFileName);
+            size_t u = n.find('_');
+            if (u == std::string::npos || n.size() < u + 1 + 16 + 4) continue;
+            ClipOv o; o.item = _strtoui64(n.substr(0, u).c_str(), nullptr, 10);
+            o.orig = _strtoui64(n.substr(u + 1, 16).c_str(), nullptr, 16);
+            std::string lo = n; for (auto& c : lo) c = (char)tolower((unsigned char)c);
+            o.nid = FileId(("fc4hook\\clips\\" + lo).c_str()); o.res = nullptr;
+            if (o.item && o.orig) s_ov.push_back(o);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    } while (FindNextFileW(hm, &md));
+    FindClose(hm);
+    if (!s_ov.empty()) LogL(LOG_INFO, "per-weapon clips: %zu", s_ov.size());
+}
+static void* ClipOvResource(ClipOv& o) {
+    if (o.res) return o.res;
+    uintptr_t base = FC64Base();
+    void* mgr = *(void**)(base + 0x2dd81b8);
+    if (!mgr) return nullptr;
+    typedef void* (*Find_t)(void*, uint64_t*); typedef void* (*Create_t)(void*, uint64_t*, void*, uint8_t);
+    typedef uint8_t* (*TypeDesc_t)();
+    uint64_t k = o.nid;
+    void* r = (o_FindRes ? o_FindRes : (Find_t)(base + 0xc9bf0))(mgr, &k);
+    if (!r) {
+        uint8_t* td = ((TypeDesc_t)(base + 0x4f4030))();
+        r = (o_CreateRes ? o_CreateRes : (Create_t)(base + 0xd4950))(mgr, &k, td + 0x18, 0);
+    }
+    if (r && MemReadable((uintptr_t)r + 8, 4)) { ++*(int*)((uintptr_t)r + 8); o.res = r; }
+    return o.res;
+}
+static uint64_t s_heldItem = 0; static uint64_t s_heldTick = 0;
+
 static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_t a5, uint8_t a6, void** out) {
+    void** resSlot = nullptr; void* oldRes = nullptr;
+    if (node && MemReadable((uintptr_t)node + 0x38, 8)) {
+        if (!s_ovScanned) ClipOvScan();
+        if (!s_ov.empty()) {
+            uint64_t now = GetTickCount64();
+            if (now - s_heldTick > 100) { s_heldTick = now; s_heldItem = _strtoui64(GetState("weapon.item").c_str(), nullptr, 10); }
+            uint64_t cid = *(uint64_t*)((uint8_t*)node + 0x38);
+            for (auto& o : s_ov) {
+                if (!o.res) ClipOvResource(o);                       // start loading them all early
+                if (o.item == s_heldItem && o.orig == cid && o.res) { resSlot = (void**)((uint8_t*)node + 0x28); oldRes = *resSlot; *resSlot = o.res; }
+            }
+        }
+    }
     o_ClipStart(node, ctx, a3, a4, a5, a6, out);
+    if (resSlot) *resSlot = oldRes;
     if ((!s_clipOn.load(std::memory_order_relaxed) && !s_logOn.load(std::memory_order_relaxed)) || !node) return;
     uint64_t id = *(uint64_t*)((uint8_t*)node + 0x38);
     if (id == ~0ull) return;
@@ -644,6 +785,10 @@ static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_
             }
             AddLogLine(std::string(idb) + "  [ClipStart] from FC64" + chain + hex + " ctx=" + std::to_string((uintptr_t)ctx) + " hash@" + where);
         }
+    }
+    {   // remember the newest first-person clip's state, for "Snapshot arms"
+        std::string nm = ClipNameOf(id);
+        if (nm.rfind("1st", 0) == 0 && (nm.find("fw_se") != std::string::npos || nm.find("fw_pr") != std::string::npos || nm.find("fw_sp") != std::string::npos)) { std::lock_guard<std::mutex> lk(s_snapMx); s_snapCtx = ctx; s_snapNode = node; s_snapClip = id; s_snapName = nm; }
     }
     if (!s_clipOn.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lk(s_clipMx);
@@ -729,7 +874,7 @@ void FileLogSetEnabled(bool on) {
     std::lock_guard<std::mutex> lk(s_logMx);
     if (on && !s_logFile) {
         CreateDirectoryW((g_rootDir + L"dumps").c_str(), nullptr);
-        s_logFile = _wfopen((g_rootDir + L"dumps\\file_log.txt").c_str(), L"ab");
+        { static bool first = true; s_logFile = _wfopen((g_rootDir + L"dumps\\file_log.txt").c_str(), first ? L"wb" : L"ab"); first = false; }
         if (s_logFile) {
             setvbuf(s_logFile, nullptr, _IOFBF, 1 << 16);
             fputs("# FC4Hook file log: <file id>  <path the game asked for>  or  <file id>  [ResourceType] <path or (no path)>   [<- loose mod]\n", s_logFile);

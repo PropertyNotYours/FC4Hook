@@ -174,15 +174,40 @@ static void LoadFat(const std::wstring& fat, int arc) {
     if (u32(0) != 0x46415432 || u32(4) != 9) { LogL(LOG_DEBUG, "extract: %s is not a FAT2 v9 index, skipped", Narrow(fat).c_str()); return; }
     uint32_t n = u32(0x14);
     if (0x18 + (size_t)n * 20 > d.size()) return;
-    for (uint32_t i = 0; i < n; ++i) {
-        size_t o = 0x18 + (size_t)i * 20;
+    auto add = [&](size_t o) {
         uint64_t id = (uint64_t)u32(o) << 32 | u32(o + 4);
         uint32_t c = u32(o + 8), dd = u32(o + 12), e = u32(o + 16);
         ArcEntry a;
         a.arc = arc; a.usize = c >> 2; a.scheme = (uint8_t)(c & 3);
         a.off = ((uint64_t)dd << 2) | (e >> 30); a.csize = e & 0x3fffffff;
         s_index.emplace(id, a);                  // first archive in search order wins
+    };
+    for (uint32_t i = 0; i < n; ++i) add(0x18 + (size_t)i * 20);
+    // Sub-indexes ("subfats", FAT2 v9): after the main entries come two counted tables (localisation
+    // and an unknown one, 16 bytes per item), then subfatCount (header +0x10) blocks of
+    // u32 count + entries. Some files the game loads (e.g. the first-person arms) are only listed
+    // there. Used only when the whole file parses exactly.
+    uint32_t subCount = u32(0x10), subTotal = u32(0x0c);
+    size_t p = 0x18 + (size_t)n * 20;
+    if (subCount == 0 || subCount > 100000) return;
+    for (int variant = 0; variant < 3; ++variant) {
+        size_t q = p; bool ok = true;
+        // variant 0: two counted tables; 1: one; 2: none
+        for (int t = 0; t < 2 - variant && ok; ++t) { if (q + 4 > d.size()) { ok = false; break; } uint32_t c = u32(q); q += 4 + (size_t)c * 16; if (q > d.size()) ok = false; }
+        std::vector<size_t> subs; size_t total = 0;
+        for (uint32_t k = 0; k < subCount && ok; ++k) {
+            if (q + 4 > d.size()) { ok = false; break; }
+            uint32_t c = u32(q); q += 4;
+            if (q + (size_t)c * 20 > d.size()) { ok = false; break; }
+            for (uint32_t i = 0; i < c; ++i) subs.push_back(q + (size_t)i * 20);
+            q += (size_t)c * 20; total += c;
+        }
+        if (!ok || q != d.size() || (subTotal && total != subTotal)) continue;
+        for (size_t o : subs) add(o);
+        LogL(LOG_DEBUG, "extract: %s: %u entries + %zu in %u sub-indexes", Narrow(fat).c_str(), n, total, subCount);
+        return;
     }
+    LogL(LOG_WARN, "extract: %s has %u sub-indexes in an unknown layout (not read)", Narrow(fat).c_str(), subCount);
 }
 
 static void EnsureIndex() {
@@ -242,7 +267,7 @@ static bool MakeDirs(const std::wstring& path) {           // creates every fold
     return true;
 }
 
-static bool WriteFileAll(const std::wstring& p, const std::vector<uint8_t>& d) {
+bool WriteFileAll(const std::wstring& p, const std::vector<uint8_t>& d) {
     MakeDirs(p);
     FILE* f = _wfopen(p.c_str(), L"wb");
     if (!f) return false;
@@ -346,6 +371,87 @@ bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFi
     *msg = "Converted: " + rep;
     Log("models: %s -> %s: %s", Narrow(objFile).c_str(), Narrow(outFile).c_str(), rep.c_str());
     return true;
+}
+
+struct GlbFile { std::string path; std::vector<uint8_t> data; };
+struct GlbOptions { float scale = 1.f; float move[3] = { 0, 0, 0 }; };
+bool XbgFromGlb(const std::vector<uint8_t>& tmpl, const std::vector<uint8_t>& glb, const std::string& dir, const std::string& stem,
+                const std::function<bool(const std::string&, std::vector<uint8_t>&)>& readGame,
+                std::vector<uint8_t>& out, std::vector<GlbFile>& files, std::string* report, const GlbOptions& opt);   // glbwrite.cpp
+
+bool ModelFromGlb(const std::string& baseGamePath, const std::wstring& glbFile, const std::wstring& modFilesDir, const std::string& gameDir,
+                  const std::string& stem, float scale, const float move[3], std::string* outGamePath, std::string* msg) {
+    std::string p = LowerA(baseGamePath);
+    for (auto& c : p) if (c == '/') c = '\\';
+    std::vector<uint8_t> xbg, glb, out; std::string err;
+    if (!AnyFileRead(FileId(p.c_str()), xbg, &err, nullptr)) { *msg = "Couldn't read the base model " + p + ": " + err; return false; }
+    if (!ReadWhole(glbFile, glb) || glb.empty()) { *msg = "Couldn't read " + Narrow(glbFile); return false; }
+    auto readGame = [](const std::string& path, std::vector<uint8_t>& d) {
+        std::string l = LowerA(path); std::string e;
+        return AnyFileRead(FileId(l.c_str()), d, &e, nullptr) && !d.empty();
+    };
+    std::vector<GlbFile> files; std::string rep;
+    GlbOptions opt; opt.scale = scale; for (int k = 0; k < 3; ++k) opt.move[k] = move[k];
+    if (!XbgFromGlb(xbg, glb, gameDir, stem, readGame, out, files, &rep, opt)) { *msg = "Not converted: " + rep; return false; }
+    for (auto& f : files) {
+        std::wstring o = modFilesDir + Widen(f.path);
+        for (size_t k = 0; k < o.size(); ++k) if (o[k] == L'\\' && k > 2) CreateDirectoryW(o.substr(0, k).c_str(), nullptr);
+        if (!WriteFileAll(o, f.data)) { *msg = "Couldn't write " + Narrow(o); return false; }
+    }
+    *outGamePath = gameDir + stem + ".xbg";
+    *msg = "Built " + *outGamePath + ": " + rep;
+    Log("models: %s -> %s", Narrow(glbFile).c_str(), msg->c_str());
+    return true;
+}
+
+// ------------------------------------------------------------------ animation clips (aniclip.cpp)
+bool AniClipToGlb(const std::vector<uint8_t>& clip, const std::vector<uint8_t>& skel, std::vector<uint8_t>& glb, std::string* report, uint64_t clipId);
+bool AniGlbClipId(const std::vector<uint8_t>& glb, uint64_t* id);
+bool AniClipFromGlb(const std::vector<uint8_t>& tmpl, const std::vector<uint8_t>& glb, const std::vector<uint8_t>& skel, std::vector<uint8_t>& out, std::string* report);
+static const char* kArmsSkeleton = "graphics\\_common\\characters\\narrative\\firstpersonarms\\firstperson_rightarm.xbg";
+
+static std::string IdHex(uint64_t id) { char b[20]; snprintf(b, sizeof(b), "%016llx", (unsigned long long)id); return b; }
+
+// The game's own clip `id` -> fc4hook\dumps\animations\<id>.glb (armature + animation, for Blender).
+bool ClipExportGlb(uint64_t id, std::wstring* outPath, std::string* msg) {
+    std::vector<uint8_t> clip, skel, glb; std::string err, rep;
+    if (!GameFileRead(id, clip, &err, nullptr)) { *msg = IdHex(id) + ": " + err; return false; }
+    if (!AnyFileRead(FileId(kArmsSkeleton), skel, &err, nullptr)) { *msg = "couldn't read the first-person arms skeleton: " + err; return false; }
+    if (!AniClipToGlb(clip, skel, glb, &rep, id)) { *msg = IdHex(id) + ": " + rep; return false; }
+    std::wstring out = g_rootDir + L"dumps\\animations\\" + Widen(IdHex(id)) + L".glb";
+    for (size_t k = 0; k < out.size(); ++k) if (out[k] == L'\\' && k > 2) CreateDirectoryW(out.substr(0, k).c_str(), nullptr);
+    if (!WriteFileAll(out, glb)) { *msg = "can't write " + Narrow(out); return false; }
+    if (outPath) *outPath = out;
+    *msg = "Exported " + IdHex(id) + ": " + rep + " -> fc4hook\\dumps\\animations\\" + IdHex(id) + ".glb";
+    Log("anim: %s", msg->c_str());
+    return true;
+}
+
+// Your .glb -> a clip that replaces the game's clip `id`, written to `outFile` (a mod's files\__unknown\<id>.ani).
+bool ClipFromGlb(uint64_t id, const std::wstring& glbFile, const std::wstring& outFile, std::string* msg) {
+    std::vector<uint8_t> tmpl, skel, glb, out; std::string err, rep;
+    if (!GameFileRead(id, tmpl, &err, nullptr)) { *msg = IdHex(id) + ": " + err; return false; }
+    if (!AnyFileRead(FileId(kArmsSkeleton), skel, &err, nullptr)) { *msg = "couldn't read the first-person arms skeleton: " + err; return false; }
+    if (!ReadWhole(glbFile, glb) || glb.empty()) { *msg = "couldn't read " + Narrow(glbFile); return false; }
+    uint64_t made = 0;
+    if (AniGlbClipId(glb, &made) && made != id) {
+        *msg = "Not converted: this .glb was exported from clip " + IdHex(made) + ", not " + IdHex(id) +
+               ". Use it on that clip's row, or use the \"finds its clip\" box at the top.";
+        return false;
+    }
+    if (!AniClipFromGlb(tmpl, glb, skel, out, &rep)) { *msg = "Not converted: " + rep; return false; }
+    for (size_t k = 0; k < outFile.size(); ++k) if (outFile[k] == L'\\' && k > 2) CreateDirectoryW(outFile.substr(0, k).c_str(), nullptr);
+    if (!WriteFileAll(outFile, out)) { *msg = "can't write " + Narrow(outFile); return false; }
+    *msg = "Converted: " + rep + ". Restart the game (or reload the save) to see it.";
+    Log("anim: %s -> %s: %s", Narrow(glbFile).c_str(), Narrow(outFile).c_str(), rep.c_str());
+    return true;
+}
+
+// Which clip a .glb was exported from (0 = unknown: exported before FC4Hook 1.8.2, or not by FC4Hook).
+uint64_t ClipIdOfGlb(const std::wstring& glbFile) {
+    std::vector<uint8_t> glb; uint64_t id = 0;
+    if (ReadWhole(glbFile, glb)) AniGlbClipId(glb, &id);
+    return id;
 }
 
 // Every model an archetype uses (its .xbg paths), e.g. a weapon's first/third-person models.
@@ -496,7 +602,180 @@ static std::string ClipLabel(const std::vector<uint8_t>& d, const std::set<std::
     return out + rest;
 }
 
+// ------------------------------------------------------------------ clip names
+// A clip's file id is the CRC-64 of its .mab path, but the game ships only the ids. Find
+// names: (1) read every archive file and hash each ".mab" path written inside one; (2) guess:
+// every animations folder seen x every clip file name seen, also with the weapon name
+// swapped for every other weapon. Hits go to dumps\clip_names.txt (id<TAB>path).
+static std::map<uint64_t, std::string> LoadClipNames() {
+    std::map<uint64_t, std::string> r;
+    FILE* f = _wfopen((g_rootDir + L"dumps\\clip_names.txt").c_str(), L"rb");
+    if (!f) return r;
+    char line[700];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\r' || l.back() == '\n')) l.pop_back();
+        size_t t = l.find('\t');
+        if (l.empty() || l[0] == '#' || t != 16) continue;
+        r[_strtoui64(l.substr(0, 16).c_str(), nullptr, 16)] = l.substr(17);
+    }
+    fclose(f);
+    return r;
+}
+static std::string ClipStem(const std::string& path) {
+    size_t s = path.find_last_of('\\'); std::string n = s == std::string::npos ? path : path.substr(s + 1);
+    if (n.size() > 4) n.resize(n.size() - 4);
+    return n;
+}
+
+static uint64_t s_crcT[256];
+static uint64_t CrcMore(uint64_t h, const std::string& s) {
+    if (!s_crcT[1]) for (int i = 0; i < 256; ++i) { uint64_t c = i; for (int k = 0; k < 8; ++k) c = (c & 1) ? (c >> 1) ^ 0xD800000000000000ull : c >> 1; s_crcT[i] = c; }
+    for (unsigned char ch : s) h = s_crcT[(h ^ ch) & 0xff] ^ (h >> 8);
+    return h;
+}
+
+int FindClipNames(std::string* msg) {
+    std::vector<std::pair<uint64_t, ArcEntry>> all; std::set<uint64_t> ids;
+    {
+        std::lock_guard<std::mutex> lk(s_idxMx);
+        EnsureIndex();
+        for (auto& kv : s_index) { ids.insert(kv.first); if (kv.second.usize >= 16 && kv.second.usize <= (24u << 20)) all.push_back(kv); }
+    }
+    std::sort(all.begin(), all.end(), [](const std::pair<uint64_t, ArcEntry>& a, const std::pair<uint64_t, ArcEntry>& b) {
+        return a.second.arc != b.second.arc ? a.second.arc < b.second.arc : a.second.off < b.second.off; });
+    std::set<std::string> mabs, dirs;
+    for (size_t k = 0; k < all.size(); ++k) {
+        if (k % 500 == 0) SetState("filelog.status", "finding clip names: reading game files " + std::to_string(k) + " / " + std::to_string(all.size()) + "...");
+        std::vector<uint8_t> d; std::string err;
+        if (!GameFileRead(all[k].first, d, &err, nullptr)) continue;
+        if (d.size() >= 4 && (memcmp(d.data(), "aNi", 3) == 0 || memcmp(d.data(), "TEX", 3) == 0)) continue;
+        std::string cur;
+        for (size_t i = 0; i <= d.size(); ++i) {
+            char c = i < d.size() ? (char)d[i] : 0;
+            if (c >= 0x20 && c < 0x7f) { cur += c; continue; }
+            if (cur.size() >= 8) {
+                std::string l = LowerA(cur);
+                for (auto& ch : l) if (ch == '/') ch = '\\';
+                size_t g = l.find("graphics\\");
+                if (g != std::string::npos) l = l.substr(g);
+                size_t m = l.find(".mab");
+                if (m != std::string::npos) mabs.insert(l.substr(0, m + 4));
+                if (l.find("animations\\") != std::string::npos && g != std::string::npos) {
+                    std::string p = l; size_t e = p.find_last_of('\\');
+                    if (p.find('.') != std::string::npos) p = p.substr(0, e);
+                    while (p.size() > 9) { dirs.insert(p); size_t q = p.find_last_of('\\'); if (q == std::string::npos) break; p = p.substr(0, q); }
+                }
+            }
+            cur.clear();
+        }
+    }
+    std::map<uint64_t, std::string> found = LoadClipNames();
+    size_t before = found.size();
+    // names in the log too
+    {
+        FILE* f = _wfopen((g_rootDir + L"dumps\\file_log.txt").c_str(), L"rb");
+        char line[700];
+        while (f && fgets(line, sizeof(line), f)) {
+            std::string l = LowerA(line);
+            size_t m = l.find(".mab"), g = l.find("graphics\\");
+            if (m != std::string::npos && g != std::string::npos && g < m) mabs.insert(l.substr(g, m + 4 - g));
+        }
+        if (f) fclose(f);
+    }
+    std::set<std::string> names;
+    for (auto& p : mabs) {
+        uint64_t id = FileId(p.c_str());
+        if (ids.count(id)) found[id] = p;
+        size_t s = p.find_last_of('\\');
+        if (s != std::string::npos) { names.insert(p.substr(s + 1)); dirs.insert(p.substr(0, s)); }
+    }
+    // weapon swaps
+    std::vector<std::string> weapons = { "ak47","ak74m","akm","mg42","mkg","kimber","p416","bz19","svd","m249","rpg7","gl94","gl_79",
+        "machete","throwing_knife","molotov","grenade","c4","bow","recurve","compound","crossbow","m700","sa_50","dsr1","z93","sa50",
+        "a2000","agram2000","vector","mp34","mp5","p226","m1911","1911","d50","desert_eagle","6p9","skorpion","ump45","usp","shredder",
+        "u100","mts255","m133","spas12","spas","1887","aa12","m60","pkm","pkp","mg42","hvy","stg90","mx4","ms16","ms_16","f2000","acr",
+        "m16","ak","pistol","shotgun","sniper","smg","lmg","rifle","launcher","flamethrower","buzzsaw","harpoon","rpg","lmg","bow","ar" };
+    std::set<std::string> extra;
+    for (auto& n : names) for (auto& w : weapons) {
+        size_t p = n.find(w);
+        if (p == std::string::npos) continue;
+        for (auto& w2 : weapons) if (w2 != w) extra.insert(n.substr(0, p) + w2 + n.substr(p + w.size()));
+    }
+    names.insert(extra.begin(), extra.end());
+    std::vector<std::string> nv(names.begin(), names.end());
+    size_t di = 0;
+    for (auto& dname : dirs) {
+        if (++di % 50 == 0) SetState("filelog.status", "finding clip names: guessing in folder " + std::to_string(di) + " / " + std::to_string(dirs.size()) + " (" + std::to_string(found.size()) + " named)...");
+        uint64_t h = CrcMore(0, dname + "\\");
+        for (auto& n : nv) {
+            uint64_t id = CrcMore(h, n);
+            if (ids.count(id) && !found.count(id)) found[id] = dname + "\\" + n;
+        }
+    }
+    FILE* out = _wfopen((g_rootDir + L"dumps\\clip_names.txt").c_str(), L"wb");
+    if (out) {
+        fputs("# FC4Hook clip names: <file id><TAB><.mab path>  (made by File log > Find clip names)\r\n", out);
+        for (auto& kv : found) fprintf(out, "%s\t%s\r\n", HexId(kv.first).c_str(), kv.second.c_str());
+        fclose(out);
+    }
+    *msg = "Found names for " + std::to_string(found.size()) + " clips (" + std::to_string(found.size() - before) + " new; " +
+           std::to_string(mabs.size()) + " .mab paths and " + std::to_string(dirs.size()) + " animation folders seen). "
+           "Saved to dumps\\clip_names.txt; press Label animation clips to show them.";
+    Log("%s", msg->c_str());
+    return (int)found.size();
+}
+
+// Which game files mention the clips whose name contains `filter` (by their 8-byte id)?
+// Writes dumps\clip_refs.txt and copies each such file to dumps\extracted\refs\.
+int FindClipReferences(const std::string& filterIn, std::string* msg) {
+    std::string filter = LowerA(filterIn);
+    std::map<uint64_t, std::string> names = LoadClipNames();
+    std::map<uint64_t, std::string> want;
+    for (auto& kv : names) if (!filter.empty() && LowerA(kv.second).find(filter) != std::string::npos) want[kv.first] = ClipStem(kv.second);
+    if (want.empty()) { *msg = "No named clips contain \"" + filterIn + "\" (run Find clip names first)."; return 0; }
+    std::vector<std::pair<uint64_t, ArcEntry>> all;
+    {
+        std::lock_guard<std::mutex> lk(s_idxMx);
+        EnsureIndex();
+        for (auto& kv : s_index) if (kv.second.usize >= 16 && kv.second.usize <= (64u << 20)) all.push_back(kv);
+    }
+    std::sort(all.begin(), all.end(), [](const std::pair<uint64_t, ArcEntry>& a, const std::pair<uint64_t, ArcEntry>& b) {
+        return a.second.arc != b.second.arc ? a.second.arc < b.second.arc : a.second.off < b.second.off; });
+    struct Hit { size_t size; int n; std::string head, sample; };
+    std::map<uint64_t, Hit> hits;
+    for (size_t k = 0; k < all.size(); ++k) {
+        if (k % 500 == 0) SetState("filelog.status", "finding files that use \"" + filterIn + "\" clips: " + std::to_string(k) + " / " +
+                                   std::to_string(all.size()) + " (" + std::to_string(hits.size()) + " found)...");
+        if (want.count(all[k].first)) continue;
+        std::vector<uint8_t> d; std::string err;
+        if (!GameFileRead(all[k].first, d, &err, nullptr)) continue;
+        int n = 0; std::string sample;
+        for (size_t i = 0; i + 8 <= d.size(); ++i) {
+            uint64_t v; memcpy(&v, &d[i], 8);
+            auto it = want.find(v);
+            if (it != want.end()) { if (++n <= 3) sample += it->second + " "; i += 7; }
+        }
+        if (!n) continue;
+        Hit h; h.size = d.size(); h.n = n; h.sample = sample;
+        for (size_t i = 0; i < 8 && i < d.size(); ++i) h.head += (d[i] >= 0x20 && d[i] < 0x7f) ? (char)d[i] : '.';
+        hits[all[k].first] = h;
+        WriteFileAll(g_rootDir + L"dumps\\extracted\\refs\\" + Widen(HexId(all[k].first)) + L".bin", d);
+    }
+    FILE* out = _wfopen((g_rootDir + L"dumps\\clip_refs.txt").c_str(), L"wb");
+    if (out) {
+        fprintf(out, "# files mentioning %zu clips matching \"%s\": <file id>  <hits>  <size>  <first bytes>  <examples>\r\n", want.size(), filterIn.c_str());
+        for (auto& kv : hits) fprintf(out, "%s  %d  %zu  %s  %s\r\n", HexId(kv.first).c_str(), kv.second.n, kv.second.size, kv.second.head.c_str(), kv.second.sample.c_str());
+        fclose(out);
+    }
+    *msg = std::to_string(hits.size()) + " game files mention the " + std::to_string(want.size()) + " \"" + filterIn +
+           "\" clips. List in dumps\\clip_refs.txt, the files in dumps\\extracted\\refs\\.";
+    Log("%s", msg->c_str());
+    return (int)hits.size();
+}
+
 int LabelAnimationClips(std::string* msg) {
+    std::map<uint64_t, std::string> clipNames = LoadClipNames();
     std::wstring logp = g_rootDir + L"dumps\\file_log.txt";
     FileLogFlush();
     FILE* f = _wfopen(logp.c_str(), L"rb");
@@ -526,6 +805,8 @@ int LabelAnimationClips(std::string* msg) {
         std::vector<uint8_t> d; std::string err, from;
         if (!GameFileRead(ids[k], d, &err, &from)) { ++missing; continue; }
         std::string lab = ClipLabel(d, known);
+        auto cn = clipNames.find(ids[k]);
+        if (cn != clipNames.end()) lab = ClipStem(cn->second) + "  " + lab;
         labels[ids[k]] = lab;
         if (out) fprintf(out, "%s  %s   [%zu bytes]\r\n", HexId(ids[k]).c_str(), lab.c_str(), d.size());
         ++n;

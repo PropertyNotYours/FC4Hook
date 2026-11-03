@@ -401,6 +401,126 @@ static void hk_PathToId(uint64_t* out, const char* path, unsigned flags) {
 // asks for it: FUN_1800d4950(manager, &id, typeKey, flag) on patch 1.10. The id is the same
 // file id the archives use, so Extract / Swap work on these lines too. Logged with the
 // resource's engine type (the object's vfunc 1 returns its type descriptor; name at +0).
+// Animation packages aren't archive files (built in memory), so keep their objects to dump.
+static std::mutex s_objMx;
+static std::map<uint64_t, void*> s_resObj;
+
+// Writes the object and everything reachable through pointers (3 levels, 4 KB each) as
+// records: u64 address, u32 size, bytes. First record: module base (size 0).
+bool DumpResourceMemory(uint64_t id, std::string* msg) {
+    void* obj = nullptr;
+    { std::lock_guard<std::mutex> lk(s_objMx); auto it = s_resObj.find(id); if (it != s_resObj.end()) obj = it->second; }
+    if (!obj) { *msg = "not in the archives, and no package object seen for it this session"; return false; }
+    std::vector<uint8_t> out;
+    auto put = [&](const void* p, size_t n) { const uint8_t* b = (const uint8_t*)p; out.insert(out.end(), b, b + n); };
+    uint64_t base = (uint64_t)GetModuleHandleW(L"FC64.dll"); uint32_t z = 0;
+    put(&base, 8); put(&z, 4);
+    std::set<uintptr_t> seen; std::vector<std::pair<uintptr_t, int>> q{ {(uintptr_t)obj, 0} };
+    for (size_t qi = 0; qi < q.size() && out.size() < (32u << 20); ++qi) {
+        uintptr_t a = q[qi].first; int depth = q[qi].second;
+        if (!seen.insert(a).second) continue;
+        uint32_t n = 4096;
+        while (n >= 64 && !MemReadable(a, n)) n /= 2;
+        if (n < 64) continue;
+        uint64_t a64 = a; put(&a64, 8); put(&n, 4); put((void*)a, n);
+        if (depth >= 3) continue;
+        for (uint32_t o = 0; o + 8 <= n; o += 8) {
+            uintptr_t p = *(uintptr_t*)(a + o);
+            if (p < 0x10000 || (p & 7) || p > 0x7fffffffffffULL) continue;
+            if (base && p >= base && p < base + 0x4000000) continue;   // code / vtables
+            if (MemReadable(p, 64)) q.push_back({ p, depth + 1 });
+        }
+    }
+    char nm[64]; snprintf(nm, sizeof(nm), "%016llx", (unsigned long long)id);
+    std::wstring path = g_rootDir + L"dumps\\extracted\\__unknown\\packages\\" + Widen(nm) + L".mem";
+    if (!WriteFileAll(path, out)) { *msg = "can't write " + Narrow(path); return false; }
+    *msg = std::string("dumped package ") + nm + " from memory (" + std::to_string(out.size() / 1024) + " KB) to dumps\\extracted\\__unknown\\packages\\";
+    return true;
+}
+
+
+// PACKAGE USE: every time the game looks up an animation package (FUN_1800c9bf0, the resource
+// manager's id -> resource lookup, called for everything), log which code asked for it as
+// FC64 offsets of the call stack, once per (package, caller chain). Packages are found in a
+// small lock-free id table filled by the resource-create hook.
+static std::atomic<uint64_t> s_pkgTab[4096];
+static void PkgAdd(uint64_t id) {
+    if (!id || id == ~0ull) return;
+    for (uint32_t i = (uint32_t)(id ^ (id >> 29)) & 4095, n = 0; n < 4096; i = (i + 1) & 4095, ++n) {
+        uint64_t cur = s_pkgTab[i].load(std::memory_order_relaxed);
+        if (cur == id) return;
+        if (!cur) { uint64_t z = 0; if (s_pkgTab[i].compare_exchange_strong(z, id)) return; if (z == id) return; }
+    }
+}
+static bool PkgHas(uint64_t id) {
+    for (uint32_t i = (uint32_t)(id ^ (id >> 29)) & 4095, n = 0; n < 4096; i = (i + 1) & 4095, ++n) {
+        uint64_t cur = s_pkgTab[i].load(std::memory_order_relaxed);
+        if (cur == id) return true;
+        if (!cur) return false;
+    }
+    return false;
+}
+typedef void* (*FindRes_t)(void* mgr, uint64_t* id);
+static FindRes_t o_FindRes = nullptr;
+static std::set<std::string> s_pkgSeen;
+static void* hk_FindRes(void* mgr, uint64_t* idp) {
+    void* r = o_FindRes(mgr, idp);
+    if (!idp || !s_logOn.load(std::memory_order_relaxed) || !PkgHas(*idp)) return r;
+    void* st[14] = {}; USHORT n = RtlCaptureStackBackTrace(1, 14, st, nullptr);
+    uintptr_t base = FC64Base();
+    std::string chain;
+    for (USHORT k = 0; k < n; ++k) {
+        uintptr_t a = (uintptr_t)st[k];
+        if (a < base || a > base + 0x4000000) continue;
+        char b[24]; snprintf(b, sizeof(b), " +%llx", (unsigned long long)(a - base)); chain += b;
+    }
+    char idb[20]; snprintf(idb, sizeof(idb), "%016llx", (unsigned long long)*idp);
+    std::lock_guard<std::mutex> lk(s_logMx);
+    if (!s_pkgSeen.insert(std::string(idb) + chain).second) return r;
+    auto it = s_names.find(*idp);
+    std::string line = std::string(idb) + "  [PackageUse] " + (it == s_names.end() ? "?" : it->second) + "  from FC64" + chain;
+    AddLogLine(line.c_str());
+    return r;
+}
+
+// PACKAGE ADD: the player's animation object gets packages through a virtual method (vtable
+// +0xe0 add, +0xe8 remove; FUN_181806b20 adds additive_offset / vehicle_enter that way). Hook
+// that function, and through the object it gets, the add/remove methods: logs every package
+// added to / removed from a character, with the calling code.
+typedef void (*PkgOp_t)(void* self, void* pkg);
+static PkgOp_t o_PkgAdd = nullptr, o_PkgRemove = nullptr;
+typedef void (*AddDefaults_t)(void* a, void* animObj);
+static AddDefaults_t o_AddDefaults = nullptr;
+static std::atomic<bool> s_pkgOpsHooked{ false };
+static void LogPkgOp(const char* what, void* self, void* pkg) {
+    if (!s_logOn.load(std::memory_order_relaxed) || !pkg || !MemReadable((uintptr_t)pkg + 0x10, 8)) return;
+    uint64_t id = *(uint64_t*)((uintptr_t)pkg + 0x10);
+    void* st[14] = {}; USHORT n = RtlCaptureStackBackTrace(2, 14, st, nullptr);
+    uintptr_t base = FC64Base(); std::string chain;
+    for (USHORT k = 0; k < n; ++k) {
+        uintptr_t a = (uintptr_t)st[k];
+        if (a < base || a > base + 0x4000000) continue;
+        char b[24]; snprintf(b, sizeof(b), " +%llx", (unsigned long long)(a - base)); chain += b;
+    }
+    char idb[20]; snprintf(idb, sizeof(idb), "%016llx", (unsigned long long)id);
+    std::lock_guard<std::mutex> lk(s_logMx);
+    auto it = s_names.find(id);
+    std::string nm = it == s_names.end() ? "?" : it->second;
+    if (!s_pkgSeen.insert(std::string(what) + idb + chain).second) return;
+    char ob[32]; snprintf(ob, sizeof(ob), " to %p", self);
+    AddLogLine(std::string(idb) + "  [" + what + "] " + nm + ob + "  from FC64" + chain);
+}
+static void hk_PkgAdd(void* self, void* pkg) { LogPkgOp("PackageAdd", self, pkg); o_PkgAdd(self, pkg); }
+static void hk_PkgRemove(void* self, void* pkg) { LogPkgOp("PackageRemove", self, pkg); o_PkgRemove(self, pkg); }
+static void hk_AddDefaults(void* a, void* animObj) {
+    if (animObj && !s_pkgOpsHooked.exchange(true)) {
+        HookVtable(animObj, 0xe0 / 8, (void*)hk_PkgAdd, (void**)&o_PkgAdd);
+        HookVtable(animObj, 0xe8 / 8, (void*)hk_PkgRemove, (void**)&o_PkgRemove);
+        LogL(LOG_DEBUG, "file log: package add/remove hooked");
+    }
+    o_AddDefaults(a, animObj);
+}
+
 typedef void* (*CreateRes_t)(void* mgr, uint64_t* id, void* type, uint8_t flag);
 static CreateRes_t o_CreateRes = nullptr;
 
@@ -420,6 +540,7 @@ static void* hk_CreateRes(void* mgr, uint64_t* idp, void* type, uint8_t flag) {
     }
     char tn[96];
     snprintf(tn, sizeof(tn), "%s", tname);
+    if (strcmp(tn, "CAnimationPackageResource") == 0) { { std::lock_guard<std::mutex> lk2(s_objMx); s_resObj[id] = obj; } PkgAdd(id); }
     std::string mod = LooseNameFor(id);
     std::lock_guard<std::mutex> lk(s_logMx);
     if (!s_resSeen.insert(id).second) return obj;
@@ -460,6 +581,12 @@ void FileLogInstall() {
     if (!r) LogL(LOG_WARN, "file log: resource-create function not found; resource log unavailable");
     else if (!CreateHook((void*)r, (void*)hk_CreateRes, (void**)&o_CreateRes)) { LogL(LOG_WARN, "file log: resource hook failed"); o_CreateRes = nullptr; }
     else LogL(LOG_DEBUG, "file log: hooked resource-create at FC64+0x%llx", (unsigned long long)(r - FC64Base()));
+    uintptr_t q = FindPattern("FC64.dll", "4C 8B 59 48 4C 8B 0A 4C 8B D1 4D 85 DB 74 ?? B8 5F 0B 4E 83 45 8B C1 41 81 F0 EF BE AD DE");
+    if (!q) LogL(LOG_WARN, "file log: resource-lookup function not found; package use log unavailable");
+    else if (!CreateHook((void*)q, (void*)hk_FindRes, (void**)&o_FindRes)) { LogL(LOG_WARN, "file log: lookup hook failed"); o_FindRes = nullptr; }
+    uintptr_t a = FindPattern("FC64.dll", "40 56 48 83 EC 30 48 8B F2 E8 ?? ?? ?? ?? 48 85 F6 0F 84 32 01 00 00 48 89 5C 24 40 48 89 6C 24 58 48 8D 15");
+    if (!a) LogL(LOG_WARN, "file log: package-defaults function not found");
+    else if (!CreateHook((void*)a, (void*)hk_AddDefaults, (void**)&o_AddDefaults)) o_AddDefaults = nullptr;
 }
 
 bool ResourceLogAvailable() { return o_CreateRes != nullptr; }
@@ -478,9 +605,47 @@ static std::map<uint64_t, std::string> s_clipLabels;
 
 static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_t a5, uint8_t a6, void** out) {
     o_ClipStart(node, ctx, a3, a4, a5, a6, out);
-    if (!s_clipOn.load(std::memory_order_relaxed) || !node) return;
+    if ((!s_clipOn.load(std::memory_order_relaxed) && !s_logOn.load(std::memory_order_relaxed)) || !node) return;
     uint64_t id = *(uint64_t*)((uint8_t*)node + 0x38);
     if (id == ~0ull) return;
+    if (s_logOn.load(std::memory_order_relaxed)) {           // [ClipStart]: who started it, and the node's bytes
+        void* st[16] = {}; USHORT n = RtlCaptureStackBackTrace(1, 16, st, nullptr);
+        uintptr_t base = FC64Base(); std::string chain;
+        for (USHORT k = 0; k < n; ++k) {
+            uintptr_t a = (uintptr_t)st[k];
+            if (a < base || a > base + 0x4000000) continue;
+            char b[24]; snprintf(b, sizeof(b), " +%llx", (unsigned long long)(a - base)); chain += b;
+        }
+        char idb[20]; snprintf(idb, sizeof(idb), "%016llx", (unsigned long long)id);
+        std::lock_guard<std::mutex> lk(s_logMx);
+        if (s_pkgSeen.insert(std::string("clip") + idb + chain).second) {
+            std::string hex;
+            uintptr_t vt = MemReadable((uintptr_t)node, 8) ? *(uintptr_t*)node : 0;
+            char vb[40]; snprintf(vb, sizeof(vb), " vt=+%llx node=", (unsigned long long)(vt > base ? vt - base : vt)); hex = vb;
+            if (MemReadable((uintptr_t)node, 0x80)) for (int i = 0; i < 0x80; ++i) { char h[4]; snprintf(h, sizeof(h), "%02x", ((uint8_t*)node)[i]); hex += h; if ((i & 7) == 7) hex += ' '; }
+            // where does the current weapon's name hash (crc32 "kimber" = 634df464, "ak74m" = 275ac4e5) live?
+            std::string where;
+            static const uint32_t want[] = { 0x634df464u, 0x275ac4e5u };
+            auto scan = [&](uintptr_t b, size_t len, const char* tag) {
+                for (size_t o = 0; o + 4 <= len; o += 4) {
+                    if (!MemReadable(b + o, 4)) { o = (o | 0xfff); continue; }
+                    uint32_t v = *(uint32_t*)(b + o);
+                    for (uint32_t w : want) if (v == w) { char t[64]; snprintf(t, sizeof(t), " %s+%zx=%08x", tag, o, v); where += t; }
+                    if (o + 8 <= len && !(o & 7)) {
+                        uint64_t v8 = *(uint64_t*)(b + o);
+                        if (v8 == 0x423d2930a6655000ull || v8 == 0x50dbe9450bb00000ull) { char t[64]; snprintf(t, sizeof(t), " %s+%zx=pkg%016llx", tag, o, (unsigned long long)v8); where += t; }
+                    }
+                }
+            };
+            scan((uintptr_t)ctx, 0x3000, "ctx");
+            if (MemReadable((uintptr_t)ctx, 0x400)) for (int k = 0; k < 0x400 / 8; ++k) {
+                uintptr_t q = *(uintptr_t*)((uintptr_t)ctx + k * 8);
+                if (q > 0x10000 && q < 0x7fffffffffffULL && !(q & 7) && MemReadable(q, 0x800)) { char t[24]; snprintf(t, sizeof(t), "[%x]", k * 8); scan(q, 0x800, t); }
+            }
+            AddLogLine(std::string(idb) + "  [ClipStart] from FC64" + chain + hex + " ctx=" + std::to_string((uintptr_t)ctx) + " hash@" + where);
+        }
+    }
+    if (!s_clipOn.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lk(s_clipMx);
     s_clips.push_front({ GetTickCount64(), id, (uintptr_t)ctx });
     if (s_clips.size() > 400) s_clips.pop_back();

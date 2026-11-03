@@ -1,6 +1,152 @@
 FC4Hook changelog
 =================
 
+1.8.9
+  - File log: [ClipStart] lines also say where in the animation state the current weapon's name hash sits.
+
+1.8.8
+  - File log: [ClipStart] lines: which game code started each animation clip (once per clip and caller).
+
+1.8.7
+  - File log: [PackageAdd] / [PackageRemove] lines: every animation package added to or removed from a character,
+    with the calling code.
+
+1.8.6
+  - File log: [PackageUse] lines record which game code looks up each animation package (e.g. kimber) and from
+    where (FC64 call stack), once per caller - for finding how a weapon picks the player's animation set.
+
+1.8.5
+  - File log: "Find files using these clips" lists every game file that refers to the clips whose name contains
+    the text you type (e.g. sekimber = the 1911's clips), in dumps\clip_refs.txt (files copied to dumps\extracted\refs).
+
+1.8.4
+  - File log: "Find clip names" looks for the real names of animation clips (e.g. ..._reload_ak74m.mab): reads every
+    game file for animation file names and tries likely ones (each animation folder x each name, weapon swapped for
+    every other weapon). Found names go to dumps\clip_names.txt and show up after Label animation clips.
+
+1.8.3
+  - File log: Extract on a [CAnimationPackageResource] line (weapon animation sets: kimber, ak74m...) dumps
+    the package from memory to dumps\extracted\__unknown\packages\ (packages aren't archive files).
+
+1.8.2
+  - Exported animation .glb files remember which clip they came from (the animation is named FC4_<clip id>;
+    Blender keeps it). Workshop > Animations: "Use my .glb (finds its clip)" puts a .glb on the right clip by
+    itself, so files can be renamed (reload.glb...); a .glb used on the wrong row is refused.
+  - One Blender frame = one game frame in exported files (24 fps timeline), so Blender never resamples the
+    animation: through a real Blender export the result matches the game's clip to 0.006 degrees (before: up
+    to 3.5 degrees off). The clip keeps the game's own speed. Re-export clips exported with 1.8.0/1.8.1.
+
+1.8.1
+  - Workshop > Animations: each clip shows its length and which of the weapon's timing stats it most likely
+    belongs to ("probably reload (stat 3.90 s)"). A clip runs a little longer than its stat: the stat is when the
+    action is done in gameplay, the clip also has the arms settling back (MG42 reload: stat 3.9 s, clip 4.17 s).
+
+1.8.0
+  - Custom first-person animations. Workshop > your weapon > Animations: tick Watch, Clear, use the weapon in
+    game, and the clips the game played are listed. "Export .glb" turns one into a Blender file (armature + the
+    animation, fc4hook\dumps\animations\<id>.glb); edit it, export as glTF Binary, and "Use my .glb" writes it
+    into the weapon's mod as a replacement clip. "Restore the game's" removes it.
+    Clips are shared by every weapon that uses them (the Ray Gun uses the Kimber's).
+  - Developer > Animation > Clip monitor: ".glb" export per clip.
+  - The Ubisoft "aNi" clip format is documented in docs/ANI_FORMAT.md (source).
+
+1.7.11
+  - Extracting: files listed only in the archives' sub-indexes (e.g. the first-person arms models) can now
+    be extracted too.
+
+1.7.10
+  - Developer > Animation > Clip monitor: "Extract" per clip and "Extract all listed" (to
+    dumps\extracted\animations\<id>.ani), for working on custom animations.
+
+1.7.9
+  - Fixed: .glb models were black in first person. The game's "_s"/"_m" weapon textures are packed masks
+    (red = shine, green = ambient occlusion, blue = gloss), not plain shine maps; the plain grey FC4Hook
+    wrote there put every surface in deep shadow. The mask is now packed like the game's own. Rebuild.
+
+1.7.8
+  - Better materials for .glb models: each piece now gets its own colour, normal and specular (shine)
+    textures. A normal map or metal/roughness map packed in the .glb is used; without a normal map one is
+    made from the colour texture (panel lines and engravings become bumps), and the shine comes from the
+    material's roughness and metallic values. Rebuild your models to get it.
+
+1.7.7
+  - Workshop > Model: the "On the ground (pickup)" row works now. The pickup's model path is written as
+    text inside the pickup archetype (not as a ModelPath), so the row finds it there, builds your .glb on
+    it and swaps the path in place.
+
+1.7.6
+  - Moving parts for .glb models: name a Blender object after a part of the base weapon (CLIP, SLIDE,
+    HAMMER... or MAG / MAGAZINE / BATTERY for the clip) and it goes on that part, so the weapon's own
+    animations move it: the magazine comes out on reload, the slide racks. Everything else is the FRAME.
+  - Fixed: parts are stored relative to their bones. On weapons whose bones aren't at the origin (the
+    Kimber's FRAME sits 7 cm back) the model was shifted by that much. Rebuild your models.
+
+1.7.5
+  - Fixed: .glb models looked almost black. Their normals were written x, y, z; the game stores them
+    z, y, x, so most surfaces were lit from the wrong side. Press "Use my .glb / .obj" again to rebuild.
+
+1.7.4
+  - Third-person models: .glb models now work on models with several LODs (the _tp models other players
+    see, and the ones lying on the ground). Workshop > Model now also lists the pickup's model.
+  - Scale and Move (cm) next to "Use my .glb / .obj" to fit a model to the weapon without Blender.
+  - Fixed: the new model's pieces are now always put on the weapon's FRAME part (before, on some weapons a
+    piece could land on the CLIP or SLIDE and move with it), and get materials of their own instead of
+    replacing one of the base model's.
+  - First-person and third-person conversions of the same .glb no longer overwrite each other.
+
+1.7.3
+  - .glb models now work on more base weapons: fixed "the base model has an unsupported layout" (the
+    Kimber and others have extra bytes at the end, fewer skin groups, and different data padding).
+  - When the base weapon has fewer free pieces than your model has materials, the extra textures are packed
+    into one 2x2 texture atlas with the main one instead of being dropped (up to 4 textures).
+  - If the base model has no plain material to copy, the Desert Eagle's is used.
+
+1.7.2
+  - Fixed: .glb models were invisible. Their materials were copied from the Desert Eagle's glowing-sight
+    material (which has no real colour map); they now copy a normal colour + normal-map material.
+    Press "Use my .glb / .obj" again to rebuild. Don't move the files it writes: the model refers to
+    them by their game path (graphics\fc4hook\<mod>\...).
+
+1.7.1
+  - Fixed: a weapon with a .glb model crashed the game when drawn (in the graphics driver). Textures bigger
+    than 256x256 are now written the way the game stores them: the top level in a separate _mip0.xbt file.
+    Press "Use my .glb / .obj" again to rebuild a model made with 1.7.0. Same fix for Models & Textures >
+    Image -> game texture.
+
+1.7.0
+  - Completely custom weapon models: F8 > Workshop > your weapon > Model > "Use my .glb / .obj".
+    Export your model from Blender as glTF Binary (.glb) with its textures packed in, lined up where the
+    base weapon's model sits. FC4Hook builds a new .xbg on the base weapon's skeleton (it moves with the gun
+    and keeps its animations), converts the .glb's textures, makes materials for them, saves it all in the
+    mod's files\graphics\fc4hook\<mod>\ folder and points the weapon at it. Up to one texture per free
+    piece of the base model (the Desert Eagle has 3).
+  - First-person models only for now; third-person (_tp) models have several LODs and aren't supported yet.
+
+1.6.4
+  - New menu layout: a sidebar with grouped pages instead of one long row of tabs.
+    Play (Cheats, Armory, Travel, Spawner, Co-op), Create (Workshop, Models & Textures, Mods),
+    Developer (dev mode only; every old Developer sub-tab is its own page), FC4Hook (Console, Settings, About).
+  - Models & Textures moved out of Developer, so it no longer needs developer mode.
+
+1.6.3
+  - F8 > Developer > Models: "Image -> game texture": PNG/JPG/TGA to a Far Cry 4 .xbt (colour,
+    normal map or specular, all mip levels), written into a mod at the game path you choose
+  - (groundwork for fully custom weapon models: texture and material building)
+
+1.6.2
+  - Cheats: "Save the game now" button (the game's own save)
+  - Workshop > Model: fixed the gun turning invisible when a full Windows path was typed (the game
+    knows files by their GAME path, e.g. graphics\model\gun.xbg). Now any of these work: a game
+    path, the full path to an .xbg in a mod's files\ folder, or an .xbg anywhere (copied into the
+    mod). Paths that don't exist are refused. Setting a model changes only that slot (first- and
+    third-person can't overwrite each other any more). New "Reset to original" button per slot
+
+1.6.1
+  - Fixed: a weapon whose model was changed in the Workshop showed nothing in your hands. The
+    archetype also lists the model in its resource list (the files loaded with it), which still
+    named the old model. Changing the model now updates it everywhere, and changing it again
+    repairs weapons made with 1.6.0
+
 1.6.0 - custom models
   - .obj -> .xbg: make a weapon (or any) model your own. Edit the game's model in Blender
     (move/scale/rotate vertices), export .obj, and FC4Hook writes your shape into the game's

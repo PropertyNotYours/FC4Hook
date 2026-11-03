@@ -149,3 +149,10 @@ fc4hook\mods\<ModName>\armory.txt, same format as fc4hook\armory\weapons.txt:
   Golden AK = 123456789012345
 
 Co-op: both players need the same mods (same files) and the same game version.
+
+
+Moving parts (.glb models)
+--------------------------
+Name a Blender object after a part of the base weapon and it moves with that part's animation:
+CLIP (or MAG / MAGAZINE / BATTERY), SLIDE, HAMMER, SLIDE_LOCK, ... (the part names are in the base model:
+F8 > Workshop > Model > Extract it, then look at the part names). Anything else is the FRAME.

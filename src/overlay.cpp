@@ -228,6 +228,14 @@ static void CfgSlider(const char* id, const char* stateKey, const char* def, flo
 
 static void TabCheats() {
     NeedWorldNote();
+    ImGui::BeginDisabled(!LuaReady());
+    if (ImGui::Button("Save the game now") && Debounced("savegame"))
+        Lua("local ok, e = pcall(SaveGame) ModSetState('cheat.saved', ok and os.date('%H:%M:%S') or ('failed: ' .. tostring(e)))", "=save");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Asks the game to save right now (its own save, same as after a mission or an outpost).\n"
+                          "The game may refuse while a save isn't allowed (in a mission, in combat, during a cutscene).");
+    { std::string sv = GetState("cheat.saved"); if (!sv.empty()) { ImGui::SameLine(); ImGui::TextDisabled("last save request: %s", sv.c_str()); } }
     ImGui::SeparatorText("Player");
     CheatSwitch("God mode", "god", "EnableGodMode", "You can't die. Stays on through deaths, cutscenes and loads until you switch it off.");
     ImGui::SameLine(ImGui::GetFontSize() * 14);
@@ -1302,7 +1310,8 @@ static void TabFileLog() {
             std::string m, path, type; uint64_t id = 0;
             ParseLogLine(line, &id, &path, &type);
             if (path.empty() && !type.empty()) path = "__unknown\\" + type + "\\" + line.substr(0, 16) + ".bin";
-            ExtractGameFile(id, path, &m); SetState("filelog.status", m); Log("%s", m.c_str());
+            if (!ExtractGameFile(id, path, &m) && type == "CAnimationPackageResource") DumpResourceMemory(id, &m);
+            SetState("filelog.status", m); Log("%s", m.c_str());
         });
         SetState("filelog.status", "extracting...");
     }
@@ -1338,6 +1347,25 @@ static void TabFileLog() {
     ImGui::SameLine(); Help("Reads every [CAnimationResource] clip in your file log out of the game's archives and tags it with its "
                             "length and the weapon / bone names inside, e.g. {2.30s ak74m RightHand}. Then filter by a weapon name "
                             "and use Replace THIS / WITH this to swap clips. Also written to dumps\\animation_clips.txt.");
+    ImGui::SameLine(); if (ImGui::Button("Find clip names") && Debounced("fcn")) {
+        RunExtractJob([] { std::string m; FindClipNames(&m); SetState("filelog.status", m); });
+        SetState("filelog.status", "finding clip names...");
+    }
+    ImGui::SameLine(); Help("Searches every game file for animation file names (.mab), and tries likely names (each animation folder x "
+                            "each name, with the weapon swapped for every other weapon), to give clips their real names. Takes a few "
+                            "minutes. Then press Label animation clips. Results in dumps\\clip_names.txt.");
+    {
+        static char refFilter[64] = "sekimber";
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        ImGui::InputText("##reff", refFilter, sizeof(refFilter));
+        ImGui::SameLine(); if (ImGui::Button("Find files using these clips") && Debounced("fref")) {
+            std::string f = refFilter;
+            RunExtractJob([f] { std::string m; FindClipReferences(f, &m); SetState("filelog.status", m); });
+            SetState("filelog.status", "searching...");
+        }
+        ImGui::SameLine(); Help("Searches every game file for the ids of the named clips containing this text (e.g. sekimber = "
+                                "the 1911's clips) and lists the files that use them in dumps\\clip_refs.txt. Takes a few minutes.");
+    }
     ImGui::SameLine(); if (ImGui::Button("Open extracted folder")) { CreateDirectoryW((g_rootDir + L"dumps\\extracted").c_str(), nullptr); OpenFolder(g_rootDir + L"dumps\\extracted"); }
     ImGui::SameLine(); Help("Texture editing: Extract a texture (.xbt). FC4Hook also writes a .dds of the whole image next to it. "
                             "Open the .dds in paint.net / GIMP / Photoshop, paint, and save it as DDS in the same format (DXT1/BC1 for "
@@ -1783,6 +1811,12 @@ static void TabAnimation() {
         static uint64_t evSerial = ~0ull;
         if (evSerial != ClipMonitorSerial()) { ev = ClipMonitorEvents(); evSerial = ClipMonitorSerial(); }
         ImGui::TextDisabled("%d clips started%s", (int)ev.size(), s_swapA.empty() ? "" : "   (swap pair set: finish it in File log)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Extract all listed")) {
+            int ok = 0; std::string m;
+            for (auto& e2 : ev) { char ib[24]; snprintf(ib, sizeof(ib), "%016llx", (unsigned long long)e2.id); if (ExtractGameFile(e2.id, "animations\\" + std::string(ib) + ".ani", &m)) ++ok; }
+            SetState("anim.status", "extracted " + std::to_string(ok) + " clip(s) to fc4hook\\dumps\\extracted\\animations\\");
+        }
         ImGui::BeginChild("clips", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), true);
         uint64_t now = GetTickCount64();
         for (size_t i = 0; i < ev.size(); ++i) {
@@ -1792,6 +1826,11 @@ static void TabAnimation() {
             ImGui::PushID((int)i);
             if (ImGui::SmallButton("Replace")) s_swapA = line;
             ImGui::SameLine(); if (ImGui::SmallButton("With")) s_swapB = line;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Extract")) { std::string m; ExtractGameFile(ev[i].id, "animations\\" + std::string(idb) + ".ani", &m); SetState("anim.status", m); }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(".glb")) { std::string m; ClipExportGlb(ev[i].id, nullptr, &m); SetState("anim.status", m); }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Export to fc4hook\\dumps\\animations\\<id>.glb: open in Blender (File > Import > glTF)");
             ImGui::SameLine(); ImGui::TextDisabled("%5.1fs ago", (now - ev[i].tick) / 1000.0);
             ImGui::SameLine(); ImGui::Text("%s  %s", idb, lab.c_str());
             ImGui::PopID();
@@ -1916,6 +1955,46 @@ static void TabModels() {
     }
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("Image -> game texture (.xbt)");
+    ImGui::TextWrapped("PNG, JPG or TGA -> a Far Cry 4 texture with all its mip levels. Sizes are rounded down to powers of two "
+                       "(up to 2048). Written into a mod at the game path you choose: that path REPLACES the game's texture "
+                       "there, or is a new texture your own materials can use.");
+    static char txImg[260] = "", txPath[260] = "", txMod[64] = "MyTextures";
+    static int txKind = 0;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 26); ImGui::InputTextWithHint("image##tx", "C:\\...\\ray_gun.png", txImg, sizeof(txImg));
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 26); ImGui::InputTextWithHint("game path##tx", "graphics\\mymod\\ray_gun_d.xbt", txPath, sizeof(txPath));
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12); ImGui::InputText("mod name##tx", txMod, sizeof(txMod));
+    ImGui::RadioButton("colour (_d)", &txKind, 0); ImGui::SameLine(); ImGui::RadioButton("normal map (_n)", &txKind, 1); ImGui::SameLine(); ImGui::RadioButton("specular (_s)", &txKind, 2);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!txImg[0] || !txPath[0] || !txMod[0]);
+    if (ImGui::Button("Convert##tx")) {
+        std::string img = txImg; while (!img.empty() && (img.back() == '"' || img.back() == ' ')) img.pop_back(); while (!img.empty() && (img[0] == '"' || img[0] == ' ')) img.erase(0, 1);
+        std::string gp = Lower(txPath); for (auto& c : gp) if (c == '/') c = '\\';
+        if (gp.size() < 4 || gp.compare(gp.size() - 4, 4, ".xbt") != 0) gp += ".xbt";
+        std::vector<uint8_t> in, out, mip0; std::string m, err;
+        FILE* f = _wfopen(Widen(img).c_str(), L"rb");
+        if (f) { uint8_t b[65536]; size_t n; while ((n = fread(b, 1, sizeof(b), f)) > 0) in.insert(in.end(), b, b + n); fclose(f); }
+        if (in.empty()) m = "Couldn't read " + img;
+        else if (!ImageToXbtSplit(in, txKind == 1 ? 'n' : txKind == 2 ? 's' : 'd', Mip0Name(gp), out, mip0, &err)) m = "Not converted: " + err;
+        else {
+            std::wstring dst = g_rootDir + L"mods\\" + Widen(txMod) + L"\\files\\" + Widen(gp);
+            for (size_t k = 0; k < dst.size(); ++k) if (dst[k] == L'\\' && k > 2) CreateDirectoryW(dst.substr(0, k).c_str(), nullptr);
+            FILE* o = _wfopen(dst.c_str(), L"wb");
+            if (o && fwrite(out.data(), 1, out.size(), o) == out.size()) m = "Written to mods\\" + std::string(txMod) + "\\files\\" + gp + ". Restart the game.";
+            else m = "Couldn't write " + Narrow(dst);
+            if (o) fclose(o);
+            if (!mip0.empty()) {                                   // big texture: top level in its own _mip0 file, like the game's
+                std::wstring d0 = g_rootDir + L"mods\\" + Widen(txMod) + L"\\files\\" + Widen(Mip0Name(gp));
+                FILE* o2 = _wfopen(d0.c_str(), L"wb");
+                if (!o2 || fwrite(mip0.data(), 1, mip0.size(), o2) != mip0.size()) m = "Couldn't write " + Narrow(d0);
+                else m += " (big texture: also wrote " + Mip0Name(gp) + ")";
+                if (o2) fclose(o2);
+            }
+        }
+        std::lock_guard<std::mutex> lk(s_mdlMx); s_mdlMsg = m;
+    }
+    ImGui::EndDisabled();
+
     ImGui::SeparatorText("Models the game has loaded (from the File log)");
     if (!FileLogEnabled()) {
         ImGui::TextDisabled("Turn on the File log (File log tab > Record file paths), then look at / equip / spawn things:");
@@ -1949,9 +2028,11 @@ static void TabModels() {
     ImGui::EndChild();
 }
 
-static void TabDeveloper() {
-    if (!ImGui::BeginTabBar("dev")) return;
-    if (ImGui::BeginTabItem("Diagnostics")) {
+static bool DevSec(const char* only, const char* name) { return strcmp(only, name) == 0; }
+
+// One developer page (the sidebar picks which).
+static void TabDeveloper(const char* only) {
+    if (DevSec(only, "Diagnostics")) {
         ImGui::Text("%s   API v%d", FC4HOOK_TITLE, FC4HOOK_API_VERSION);
         ImGui::Text("Lua bridge: %s   hook calls %llu   pump ticks %llu (skipped mid-Lua %llu)", BridgeStatus(),
                     (unsigned long long)LuaHookCalls(), (unsigned long long)PumpTicks(), (unsigned long long)PumpRejectsMidLua());
@@ -1967,13 +2048,11 @@ static void TabDeveloper() {
         auto plugins = LoadedPlugins();
         if (plugins.empty()) ImGui::TextDisabled("none (fc4hook\\plugins\\*.dll)");
         for (auto& p : plugins) ImGui::BulletText("%s", p.c_str());
-        ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Memory")) { TabMemory(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("File log")) { TabFileLog(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Models")) { TabModels(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Animation")) { TabAnimation(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Lua 5.4")) {
+    if (DevSec(only, "Memory")) { TabMemory(); }
+    if (DevSec(only, "File log")) { TabFileLog(); }
+    if (DevSec(only, "Animation")) { TabAnimation(); }
+    if (DevSec(only, "Lua 5.4")) {
         ImGui::Text("Lua 5.4 runtime: %s", Lua54Status());
         ImGui::TextWrapped("Scripts in fc4hook\\lua\\autorun\\ run at startup; require() loads modules from fc4hook\\lua\\. "
                            "APIs: game.* (call any game function), mem.* (memory, 64-bit integers), fc4.* (log, ticks, timers, keys, menu buttons). "
@@ -1991,9 +2070,8 @@ static void TabDeveloper() {
             ImGui::PopID();
         }
         if (btns.empty()) ImGui::TextDisabled("None yet: scripts add them with fc4.menu.button(\"Label\", function() ... end)");
-        ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Natives")) {
+    if (DevSec(only, "Natives")) {
         static char nfilter[128] = "";
         static char args[256] = "";
         if (ImGui::Button("Dump from game") && Debounced("dump")) RunScriptWithPrelude(L"dump_natives.lua", "");
@@ -2032,9 +2110,8 @@ static void TabDeveloper() {
                 }
             }
         ImGui::EndChild();
-        ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Scripts")) {
+    if (DevSec(only, "Scripts")) {
         ImGui::TextDisabled("fc4hook\\scripts\\*.lua   (autorun\\ runs automatically)");
         if (ImGui::Button("Reload autorun")) RequestAutorunReload();
         ImGui::Separator();
@@ -2049,9 +2126,8 @@ static void TabDeveloper() {
         ImGui::InputTextMultiline("##ed", editor, sizeof(editor), ImVec2(-1, ImGui::GetTextLineHeight() * 12), ImGuiInputTextFlags_AllowTabInput);
         bool run = ImGui::IsItemFocused() && ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_Enter);
         if ((ImGui::Button("Run") || run) && Debounced("edrun")) { Log("> (editor, %d bytes)", (int)strlen(editor)); QueueLua(editor, "=editor"); }
-        ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Co-op tools")) {
+    if (DevSec(only, "Co-op tools")) {
         ImGui::BeginDisabled(!LuaReady());
         if (ImGui::Button("Test: re-grant one tower's rewards") && Debounced("test")) RunScriptWithPrelude(L"coop\\tower_rewards.lua", "TOWER_MODE='test'");
         if (ImGui::Button("Inspect towers -> dumps\\tower_inspect.txt") && Debounced("insp")) RunScriptWithPrelude(L"coop\\tower_rewards.lua", "TOWER_MODE='inspect'");
@@ -2066,9 +2142,7 @@ static void TabDeveloper() {
             if (ImGui::Button(b)) ProbeNative("GetPlayerInSlot", std::to_string(i));
         }
         ImGui::EndDisabled();
-        ImGui::EndTabItem();
     }
-    ImGui::EndTabBar();
 }
 
 // ------------------------------------------------------------ about ------
@@ -2193,20 +2267,189 @@ static void WsStats(const WorkshopWeapon& w) {
     ImGui::EndTable();
 }
 
+// What the player typed into a model box -> the model's GAME path (that's what the game hashes).
+// Accepts a game path, a full path to an .xbg inside any mod's files\ folder, or a full path to
+// an .xbg anywhere else (copied into this mod). Rejects .obj (that's the box below).
+static bool WsModelPathFromInput(const WorkshopWeapon& w, std::string in, std::string* gamePath, std::string* msg) {
+    while (!in.empty() && (in.back() == ' ' || in.back() == '"')) in.pop_back();
+    while (!in.empty() && (in[0] == ' ' || in[0] == '"')) in.erase(0, 1);
+    for (auto& c : in) if (c == '/') c = '\\';
+    std::string l = Lower(in);
+    if (l.size() > 4 && l.compare(l.size() - 4, 4, ".obj") == 0) { *msg = "That's an .obj: use the \"Use my .obj\" box below to convert it."; return false; }
+    if (l.size() < 5 || l.compare(l.size() - 4, 4, ".xbg") != 0) { *msg = "A model has to be an .xbg file."; return false; }
+    if (l.find(':') == std::string::npos && l.rfind("\\\\", 0) != 0) {             // already a game path
+        if (l.rfind("files\\", 0) == 0) l = l.substr(6);
+        *gamePath = l;
+    } else {
+        size_t f = l.find("\\files\\");
+        size_t mods = l.find("\\mods\\");
+        if (f != std::string::npos && mods != std::string::npos && mods < f) *gamePath = l.substr(f + 7);   // inside a mod: its game path
+        else {                                                                       // elsewhere: copy it into this mod
+            std::string safe = Lower(w.mod); for (auto& c : safe) if (!isalnum((unsigned char)c)) c = '_';
+            std::string name = l.substr(l.find_last_of('\\') + 1);
+            *gamePath = "graphics\\fc4hook\\" + safe + "\\" + name;
+            std::wstring dst = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\" + Widen(*gamePath);
+            for (size_t k = 0; k < dst.size(); ++k) if (dst[k] == L'\\' && k > 2) CreateDirectoryW(dst.substr(0, k).c_str(), nullptr);
+            if (!CopyFileW(Widen(in).c_str(), dst.c_str(), FALSE)) { *msg = "Couldn't copy " + in + " into the mod."; return false; }
+            *msg = "Copied it into the mod. ";
+        }
+    }
+    // does it exist (game, a loaded mod, or a file just put in a mod folder)?
+    uint64_t id = FileId(gamePath->c_str());
+    bool exists = GameFileExists(id);
+    for (auto& f : VfsFiles()) if (f.id == id) exists = true;
+    if (!exists) {
+        WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((g_rootDir + L"mods\\*").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do { if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.' &&
+                     GetFileAttributesW((g_rootDir + L"mods\\" + fd.cFileName + L"\\files\\" + Widen(*gamePath)).c_str()) != INVALID_FILE_ATTRIBUTES) exists = true;
+            } while (!exists && FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
+    if (!exists) { *msg = "There's no file " + *gamePath + " in the game or in any mod's files\\ folder."; return false; }
+    return true;
+}
+
+// Workshop > Animations: the clips the game played (clip monitor), export them to Blender and replace them
+// with your own .glb. Replacements go in this weapon's mod as files\__unknown\<clip id>.ani.
+static void WsAnimations(const WorkshopWeapon& w) {
+    ImGui::TextWrapped("Custom first-person animations. 1) Tick Watch and press Clear. 2) Close the menu, hold this weapon and do "
+                       "what you want to change (draw, idle, fire, reload, sprint). 3) Come back: the clips the game played are listed, "
+                       "newest first. Export one to Blender (.glb), edit it, export it as glTF Binary and give it here. Note: a clip "
+                       "is shared by every weapon that uses it (the Ray Gun uses the Kimber's clips).");
+    if (!ClipMonitorAvailable()) { ImGui::TextDisabled("Unavailable: the game's clip-start function wasn't found."); return; }
+    bool cm = ClipMonitorEnabled();
+    if (ImGui::Checkbox("Watch##wsa", &cm)) ClipMonitorSetEnabled(cm);
+    ImGui::SameLine(); if (ImGui::Button("Clear##wsa")) ClipMonitorClear();
+    ImGui::SameLine(); if (ImGui::Button("Open the exported folder")) {
+        std::wstring dir = g_rootDir + L"dumps\\animations\\"; CreateDirectoryW((g_rootDir + L"dumps").c_str(), nullptr); CreateDirectoryW(dir.c_str(), nullptr);
+        ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    static std::vector<ClipEvent> ev; static uint64_t ser = ~0ull;
+    if (ser != ClipMonitorSerial()) { ev = ClipMonitorEvents(); ser = ClipMonitorSerial(); }
+    // one row per clip (first time seen), newest first
+    std::vector<uint64_t> ids; std::set<uint64_t> seen;
+    for (auto& e : ev) if (seen.insert(e.id).second) ids.push_back(e.id);
+    // Which weapon stat a clip probably belongs to: the stat says when the action is done in gameplay, the clip
+    // also has the arms settling back, so a clip runs a little longer than its stat (MG42 reload: stat 3.9 s, clip 4.17 s).
+    struct Stat { const char* field; const char* label; float v; };
+    std::vector<Stat> stats;
+    {
+        WsPart& pp = WsGet(w, 1);
+        static const struct { const char* f; const char* l; } kT[] = { { "fReloadTimeNormal", "reload" }, { "fReloadTimeForced", "reload, empty" },
+            { "fDrawTime", "draw" }, { "fHolsterTime", "holster" }, { "fUnjamTime", "unjam" } };
+        for (auto& t : kT) for (auto& v : pp.v) if (!v.shared && v.size == 4 && v.name == t.f) {
+            float f; memcpy(&f, &pp.d[v.offset], 4);
+            if (f > 0.05f && f < 30.f) stats.push_back({ t.f, t.l, f });
+        }
+    }
+    static std::map<uint64_t, float> lenCache;
+    auto clipLen = [&](uint64_t id) {
+        auto it = lenCache.find(id); if (it != lenCache.end()) return it->second;
+        std::vector<uint8_t> d; std::string e; float L = -1;
+        if (GameFileRead(id, d, &e, nullptr) && d.size() > 0x24 && memcmp(&d[0x18], "aNi", 3) == 0) memcpy(&L, &d[0x20], 4);
+        return lenCache[id] = L;
+    };
+    auto guess = [&](float L) {
+        std::string best; float bestErr = 1e9f;
+        for (auto& st : stats) {
+            float r = L / st.v;                                 // clip from ~90% to ~140% of its stat
+            if (r < 0.9f || r > 1.4f) continue;
+            float e = fabsf(r - 1.07f);
+            if (e < bestErr) { bestErr = e; char b[96]; snprintf(b, sizeof(b), "probably %s (stat %.2f s)", st.label, st.v); best = b; }
+        }
+        return best;
+    };
+    if (!stats.empty()) {
+        std::string line = "This weapon's timing stats:";
+        for (auto& st : stats) { char b[64]; snprintf(b, sizeof(b), "  %s %.2f s", st.label, st.v); line += b; }
+        ImGui::TextDisabled("%s", line.c_str());
+        ImGui::TextDisabled("A clip runs a little longer than its stat (the arms settle back at the end).");
+    }
+    static std::map<uint64_t, std::string> glbIn;
+    std::wstring modFiles = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\__unknown\\";
+    auto resolve = [&](std::string p) {
+        while (!p.empty() && (p.back() == '"' || p.back() == ' ')) p.pop_back(); while (!p.empty() && (p[0] == '"' || p[0] == ' ')) p.erase(0, 1);
+        if (p.find(':') == std::string::npos) return g_rootDir + L"dumps\\animations\\" + Widen(p);
+        return Widen(p);
+    };
+    {   // a .glb exported by FC4Hook 1.8.2+ knows its clip: no need to find the row
+        static char any[260] = "";
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 22);
+        ImGui::InputTextWithHint("##anyglb", "your .glb (full path, or a name in dumps\\animations)", any, sizeof(any));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!any[0]);
+        if (ImGui::Button("Use my .glb (finds its clip)")) {
+            std::wstring src = resolve(any); uint64_t cid = ClipIdOfGlb(src); std::string m;
+            if (!cid) m = "This .glb doesn't say which clip it came from (exported before FC4Hook 1.8.2?). Export the clip again from the list below, or use the box on its row.";
+            else { char ib[24]; snprintf(ib, sizeof(ib), "%016llx", (unsigned long long)cid); ClipFromGlb(cid, src, modFiles + Widen(ib) + L".ani", &m); m = std::string("Clip ") + ib + ": " + m; }
+            std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
+        }
+        ImGui::EndDisabled();
+    }
+    ImGui::BeginChild("wsclips", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 14), true);
+    if (ids.empty()) ImGui::TextDisabled("No clips yet: tick Watch, Clear, then use the weapon in game.");
+    for (uint64_t id : ids) {
+        char idb[24]; snprintf(idb, sizeof(idb), "%016llx", (unsigned long long)id);
+        ImGui::PushID(idb);
+        std::wstring repl = modFiles + Widen(idb) + L".ani";
+        bool replaced = GetFileAttributesW(repl.c_str()) != INVALID_FILE_ATTRIBUTES;
+        float L = clipLen(id);
+        ImGui::Text("%s", idb); ImGui::SameLine();
+        if (L >= 0) { ImGui::Text("%.2f s", L); ImGui::SameLine(); }
+        std::string gs = L > 0 ? guess(L) : "";
+        if (!gs.empty()) { ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1), "%s", gs.c_str()); ImGui::SameLine(); }
+        std::string lab = ClipLabelFor(id);
+        ImGui::TextDisabled("%s%s", lab.c_str(), replaced ? "  [replaced by this weapon's mod]" : "");
+        if (ImGui::SmallButton("Export .glb")) { std::string m; ClipExportGlb(id, nullptr, &m); std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m; }
+        ImGui::SameLine();
+        std::string& g = glbIn[id];
+        char buf[260]; snprintf(buf, sizeof(buf), "%s", g.c_str());
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+        if (ImGui::InputTextWithHint("##g", "your .glb (full path, or a name in dumps\\animations)", buf, sizeof(buf))) g = buf;
+        ImGui::SameLine();
+        ImGui::BeginDisabled(g.empty());
+        if (ImGui::SmallButton("Use my .glb")) {
+            std::wstring src = resolve(g);
+            std::string m; ClipFromGlb(id, src, repl, &m);
+            std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
+        }
+        ImGui::EndDisabled();
+        if (replaced) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Restore the game's")) { DeleteFileW(repl.c_str()); std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = std::string("Restored ") + idb + ". Restart the game to see it."; }
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+}
+
+struct WsFit { float scale = 1.f; float move[3] = { 0, 0, 0 }; };
+static std::map<uint32_t, WsFit> s_wsFit;
+
 static void WsModel(const WorkshopWeapon& w) {
-    WsPart& p = WsGet(w, 0);
-    if (!p.err.empty()) { ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%s", p.err.c_str()); return; }
+    {
+    WsPart& p0 = WsGet(w, 0);
+    if (!p0.err.empty()) { ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%s", p0.err.c_str()); return; }
+    }
     ImGui::TextWrapped("The models the weapon uses. Type the game path of your own model (an .xbg you ship in this mod's "
                        "files\\ folder, or any model already in the game) and press Set. Use F8 > Developer > File log to "
                        "find paths. First-person and third-person (_tp) models are separate.");
     int n = 0;
+    // the item archetype holds the models in your hands (first-person high-res + third-person), the
+    // pickup archetype the one lying on the ground
+    for (int part : { 0 }) {
+    WsPart& p = WsGet(w, part);
+    if (!p.err.empty()) continue;
     for (size_t i = 0; i < p.v.size(); ++i) {
         const FcbValue& v = p.v[i];
         if (v.shared || v.size != 8 || v.name != "ModelPath") continue;
         ++n;
         // the readable path is stored just before the hash
         std::string text = i > 0 ? FcbFormat(p.d, p.v[i - 1]) : "";
-        ImGui::PushID((int)v.offset);
+        ImGui::PushID((int)v.offset + part * 1000000);
+        uint32_t key = v.offset + (uint32_t)part * 1000000u;
         ImGui::SeparatorText(v.object.substr(v.object.rfind('/') + 1).c_str());
         ImGui::TextDisabled("now: %s", text.c_str());
         if (text.size() > 2 && text[0] == '"') {
@@ -2215,13 +2458,13 @@ static void WsModel(const WorkshopWeapon& w) {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copy this model + its materials and textures to fc4hook\\dumps\\extracted\\ to edit");
             // edited .obj of this model -> new .xbg in the mod, and point the weapon at it
             static std::map<uint32_t, std::string> objs;
-            std::string& ob = objs[v.offset];
+            std::string& ob = objs[key];
             char obuf[260]; snprintf(obuf, sizeof(obuf), "%s", ob.c_str());
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20);
-            if (ImGui::InputTextWithHint("##obj", "your edited .obj (full path, or its name if it's in this mod's folder)", obuf, sizeof(obuf))) ob = obuf;
+            if (ImGui::InputTextWithHint("##obj", "your .glb (new model) or edited .obj: full path, or its name if it's in this mod's folder", obuf, sizeof(obuf))) ob = obuf;
             ImGui::SameLine();
             ImGui::BeginDisabled(ob.empty());
-            if (ImGui::Button("Use my .obj")) {
+            if (ImGui::Button("Use my .glb / .obj")) {
                 std::string orig = text.substr(1, text.size() - 2);
                 std::wstring objPath = Widen(ob);
                 if (ob.find(':') == std::string::npos) {                 // a name: look for it anywhere in the mod folder
@@ -2246,45 +2489,152 @@ static void WsModel(const WorkshopWeapon& w) {
                 }
                 std::string safe = Lower(w.mod);
                 for (auto& c : safe) if (!isalnum((unsigned char)c)) c = '_';
+                std::string lo = Lower(ob);
+                if (lo.size() > 4 && lo.compare(lo.size() - 4, 4, ".glb") == 0) {       // a brand-new model
+                    std::string stem = Narrow(objPath.substr(objPath.find_last_of(L"\\/") + 1));
+                    stem = Lower(stem.substr(0, stem.size() - 4));
+                    for (auto& c : stem) if (!isalnum((unsigned char)c)) c = '_';
+                    // one model per slot: first-person, third-person (_tp)... must not overwrite each other
+                    std::string on = Lower(orig.substr(orig.find_last_of("\\/") + 1));
+                    if (on.find("_tp") != std::string::npos) stem += "_tp";
+                    else if (v.name != "ModelPath" || p.v[i - 1].object.find("HighRes") == std::string::npos) stem += "_" + std::to_string(v.offset);
+                    std::string gp, m, err;
+                    std::wstring filesDir = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\";
+                    WsFit& ft = s_wsFit[key];
+                    if (ModelFromGlb(orig, objPath, filesDir, "graphics\\fc4hook\\" + safe + "\\", stem, ft.scale, ft.move, &gp, &m)) {
+                        if (WorkshopSet(w, part, v.offset, 'p', gp, &err)) m += "\nThe weapon now uses it. Restart the game to see it.";
+                        else m += "\n(but couldn't point the weapon at it: " + err + ")";
+                        s_wsParts[part].loaded = false;
+                    }
+                    std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
+                } else {
                 std::string fname = orig.substr(orig.find_last_of("\\/") + 1);
                 std::string gamePath = "graphics\\fc4hook\\" + safe + "\\" + fname;
                 std::wstring out = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\" + Widen(gamePath);
                 for (size_t k = 0; k < out.size(); ++k) if (out[k] == L'\\' && k > 2) CreateDirectoryW(out.substr(0, k).c_str(), nullptr);
                 std::string m, err;
                 if (ModelFromObj(orig, objPath, out, &m)) {
-                    if (WorkshopSet(w, 0, v.offset, 'p', gamePath, &err)) m += " Saved as " + gamePath + " and the weapon now uses it. Restart the game to see it.";
+                    if (WorkshopSet(w, part, v.offset, 'p', gamePath, &err)) m += " Saved as " + gamePath + " and the weapon now uses it. Restart the game to see it.";
                     else m += " (but couldn't point the weapon at it: " + err + ")";
-                    s_wsParts[0].loaded = false;
+                    s_wsParts[part].loaded = false;
                 }
                 std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
+                }
             }
             ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Changed this model's shape in Blender? Export it as .obj (same vertices, same order:\n"
-                                  "only move, scale or rotate them) and FC4Hook turns it into a game model for this weapon.");
+            bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+            {   // fit a .glb: scale + move (applied when the button is pressed)
+                WsFit& ft = s_wsFit[key];
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+                ImGui::DragFloat("scale", &ft.scale, 0.005f, 0.05f, 10.f, "%.2fx");
+                ImGui::SameLine();
+                float cm[3] = { ft.move[0] * 100, ft.move[1] * 100, ft.move[2] * 100 };
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+                if (ImGui::DragFloat3("move cm (right, forward, up)", cm, 0.1f, -50.f, 50.f, "%.1f"))
+                    for (int k = 0; k < 3; ++k) ft.move[k] = cm[k] / 100;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("For .glb models: resize and shift your model to fit the weapon (applied when you press\n\"Use my .glb / .obj\"; press it again after changing these). Ctrl+click to type a value.");
+            }
+            if (hov)
+                ImGui::SetTooltip("A whole new model: export it from Blender as glTF Binary (.glb) with its textures packed in,\n"
+                                  "lined up where this weapon's model sits (load the extracted model to compare), 1 unit = 1 m.\n"
+                                  "It replaces this weapon's model and moves with the gun; it keeps this weapon's animations.\n\n"
+                                  "Or an edited .obj of THIS model (same vertices in the same order: only moved) to reshape it.");
         }
         static std::map<uint32_t, std::string> edits;
-        std::string& e = edits[v.offset];
+        std::string& e = edits[key];
         char buf[260]; snprintf(buf, sizeof(buf), "%s", e.c_str());
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 26);
         if (ImGui::InputTextWithHint("##mp", "graphics\\mymod\\mygun.xbg", buf, sizeof(buf))) e = buf;
         ImGui::SameLine();
         ImGui::BeginDisabled(e.empty());
         if (ImGui::Button("Set")) {
-            std::string err;
-            uint64_t id = FileId(e.c_str());
-            bool exists = GameFileExists(id);
-            for (auto& f : VfsFiles()) if (f.id == id) exists = true;
-            if (!WorkshopSet(w, 0, v.offset, 'p', e, &err)) { std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = "Couldn't set the model: " + err; }
-            else { std::lock_guard<std::mutex> lk(s_wsMx);
-                   s_wsMsg = "Model set to " + e + (exists ? ". Restart the game to see it." :
-                             ". Note: that file doesn't exist yet (not in the game or a loaded mod). Put it in this mod's files\\ folder, then restart."); }
-            s_wsParts[0].loaded = false;
+            std::string gamePath, m;
+            if (WsModelPathFromInput(w, e, &gamePath, &m)) {
+                std::string err;
+                if (!WorkshopSet(w, part, v.offset, 'p', gamePath, &err)) m = "Couldn't set the model: " + err;
+                else m = "Model set to " + gamePath + ". " + m + "Restart the game to see it.";
+                s_wsParts[part].loaded = false;
+            }
+            std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
         }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Reset to original")) {
+            std::string err;
+            if (!WorkshopSet(w, part, v.offset, 'R', "", &err)) { std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = "Couldn't reset: " + err; }
+            else { std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = "Back to the original model. Restart the game to see it."; }
+            s_wsParts[part].loaded = false;
+        }
         ImGui::PopID();
     }
-    if (!n) ImGui::TextDisabled("No model paths found in this weapon's item archetype.");
+    }
+    if (!n) ImGui::TextDisabled("No model paths found in this weapon's archetypes.");
+
+    // the pickup (lying on the ground): its model path is text inside the pickup archetype
+    static std::vector<std::string> pkModels; static std::string pkFor;
+    if (pkFor != w.mod + "|" + std::to_string(s_wsParts[0].loaded)) { pkModels = WorkshopPickupModels(w); pkFor = w.mod + "|" + std::to_string(s_wsParts[0].loaded); }
+    if (!pkModels.empty()) {
+        ImGui::SeparatorText("On the ground (pickup)");
+        const std::string& cur = pkModels[0];
+        ImGui::TextDisabled("now: \"%s\"", cur.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Extract it##pk")) ModelExtract({ cur });
+        static char pkb[260] = "";
+        static WsFit pkFit;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20);
+        ImGui::InputTextWithHint("##pkglb", "your .glb: full path, or its name if it's in this mod's folder", pkb, sizeof(pkb));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!pkb[0]);
+        if (ImGui::Button("Use my .glb##pk")) {
+            std::string ob = pkb; while (!ob.empty() && (ob.back() == '"' || ob.back() == ' ')) ob.pop_back(); while (!ob.empty() && (ob[0] == '"' || ob[0] == ' ')) ob.erase(0, 1);
+            std::wstring objPath = Widen(ob);
+            if (ob.find(':') == std::string::npos) {               // a name: look for it in the mod folder
+                std::wstring base = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\", want = Widen(ob);
+                size_t sl = want.find_last_of(L"\\/"); if (sl != std::wstring::npos) want = want.substr(sl + 1);
+                objPath = base + Widen(ob);
+                std::vector<std::wstring> dirs = { base };
+                for (size_t k = 0; k < dirs.size() && k < 200; ++k) {
+                    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((dirs[k] + L"*").c_str(), &fd);
+                    if (h == INVALID_HANDLE_VALUE) continue;
+                    do {
+                        std::wstring nn = fd.cFileName;
+                        if (nn == L"." || nn == L"..") continue;
+                        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) dirs.push_back(dirs[k] + nn + L"\\");
+                        else if (_wcsicmp(nn.c_str(), want.c_str()) == 0) objPath = dirs[k] + nn;
+                    } while (FindNextFileW(h, &fd));
+                    FindClose(h);
+                }
+            }
+            // the new path must be exactly as long as the old one (it's patched in place)
+            std::string safe = Lower(w.mod); for (auto& c : safe) if (!isalnum((unsigned char)c)) c = '_';
+            std::string dir = "graphics\\fc4hook\\";
+            size_t L = cur.size();
+            std::string m, err, gp;
+            if (L < dir.size() + 6) m = "The pickup's model path is too short to replace (" + cur + ").";
+            else {
+                uint32_t h = 2166136261u; for (char c : safe) h = (h ^ (uint8_t)c) * 16777619u;
+                char hx[16]; snprintf(hx, sizeof(hx), "%08x", h);
+                std::string stem = std::string("pk") + hx + "_" + safe;          // unique per weapon
+                size_t want = L - dir.size() - 4;
+                if (stem.size() > want) stem = stem.substr(0, want);
+                while (stem.size() < want) stem += '_';
+                std::wstring filesDir = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\";
+                if (ModelFromGlb(cur, objPath, filesDir, dir, stem, pkFit.scale, pkFit.move, &gp, &m)) {
+                    if (WorkshopRepointPickup(w, cur, gp, &err)) { m += "\nThe pickup now uses it. Restart the game to see it."; pkFor.clear(); }
+                    else m += "\n(but couldn't point the pickup at it: " + err + ")";
+                }
+            }
+            std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        ImGui::DragFloat("scale##pk", &pkFit.scale, 0.005f, 0.05f, 10.f, "%.2fx");
+        ImGui::SameLine();
+        float cm[3] = { pkFit.move[0] * 100, pkFit.move[1] * 100, pkFit.move[2] * 100 };
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::DragFloat3("move cm (right, forward, up)##pk", cm, 0.1f, -50.f, 50.f, "%.1f")) for (int k = 0; k < 3; ++k) pkFit.move[k] = cm[k] / 100;
+        ++n;
+    }
 }
 
 static void WsAdvanced(const WorkshopWeapon& w) {
@@ -2372,6 +2722,7 @@ static void TabWorkshop() {
     if (ImGui::BeginTabBar("wstabs")) {
         if (ImGui::BeginTabItem("Stats")) { WsStats(w); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Model")) { WsModel(w); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Animations")) { WsAnimations(w); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Advanced")) { WsAdvanced(w); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
@@ -2399,20 +2750,53 @@ static void DrawMenu() {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to open the Console");
     }
 
-    if (ImGui::BeginTabBar("tabs")) {
-        if (BeginTab("Cheats"))   { TabCheats();   ImGui::EndTabItem(); }
-        if (BeginTab("Armory"))   { TabArmory();   ImGui::EndTabItem(); }
-        if (BeginTab("Workshop")) { TabWorkshop(); ImGui::EndTabItem(); }
-        if (BeginTab("Travel"))   { TabTravel();   ImGui::EndTabItem(); }
-        if (BeginTab("Spawner"))  { TabSpawner();  ImGui::EndTabItem(); }
-        if (BeginTab("Co-op"))    { TabCoop();     ImGui::EndTabItem(); }
-        if (BeginTab("Mods"))     { TabMods();     ImGui::EndTabItem(); }
-        if (BeginTab("Console"))  { TabConsole();  ImGui::EndTabItem(); }
-        if (BeginTab("Settings")) { TabSettings(); ImGui::EndTabItem(); }
-        if (g_cfg.developerMode && BeginTab("Developer")) { TabDeveloper(); ImGui::EndTabItem(); }
-        if (BeginTab("About"))    { TabAbout();    ImGui::EndTabItem(); }
-        ImGui::EndTabBar();
+    // Sidebar of grouped pages instead of one long row of tabs.
+    struct Page { const char* group; const char* name; bool dev; };
+    static const Page pages[] = {
+        { "Play", "Cheats", false }, { "Play", "Armory", false }, { "Play", "Travel", false }, { "Play", "Spawner", false }, { "Play", "Co-op", false },
+        { "Create", "Workshop", false }, { "Create", "Models & Textures", false }, { "Create", "Mods", false },
+        { "Developer", "File log", true }, { "Developer", "Animation", true }, { "Developer", "Memory", true }, { "Developer", "Lua 5.4", true },
+        { "Developer", "Natives", true }, { "Developer", "Scripts", true }, { "Developer", "Co-op tools", true }, { "Developer", "Diagnostics", true },
+        { "FC4Hook", "Console", false }, { "FC4Hook", "Settings", false }, { "FC4Hook", "About", false },
+    };
+    static std::string page = "Cheats";
+    if (s_selectTab) { page = s_selectTab; if (page == "Models") page = "Models & Textures"; s_selectTab = nullptr; }
+    bool known = false;
+    for (auto& pg : pages) if (page == pg.name && (!pg.dev || g_cfg.developerMode)) known = true;
+    if (!known) page = "Cheats";
+
+    float navW = ImGui::GetFontSize() * 9.5f;
+    ImGui::BeginChild("nav", ImVec2(navW, 0), true);
+    const char* lastGroup = "";
+    for (auto& pg : pages) {
+        if (pg.dev && !g_cfg.developerMode) continue;
+        if (strcmp(lastGroup, pg.group) != 0) {
+            if (lastGroup[0]) ImGui::Spacing();
+            ImGui::TextDisabled("%s", pg.group);
+            lastGroup = pg.group;
+        }
+        if (ImGui::Selectable(pg.name, page == pg.name)) page = pg.name;
     }
+    if (!g_cfg.developerMode) { ImGui::Spacing(); ImGui::TextDisabled("Developer tools:"); ImGui::TextDisabled("Settings > Developer mode"); }
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("page", ImVec2(0, 0), false);
+    ImGui::Text("%s", page.c_str());
+    ImGui::Separator();
+    const std::string& P = page;
+    if (P == "Cheats") TabCheats();
+    else if (P == "Armory") TabArmory();
+    else if (P == "Travel") TabTravel();
+    else if (P == "Spawner") TabSpawner();
+    else if (P == "Co-op") TabCoop();
+    else if (P == "Workshop") TabWorkshop();
+    else if (P == "Models & Textures") TabModels();
+    else if (P == "Mods") TabMods();
+    else if (P == "Console") TabConsole();
+    else if (P == "Settings") TabSettings();
+    else if (P == "About") TabAbout();
+    else TabDeveloper(P.c_str());
+    ImGui::EndChild();
     ImGui::End();
 }
 

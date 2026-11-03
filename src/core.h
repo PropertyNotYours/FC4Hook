@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.6.0"
+#define FC4HOOK_VERSION      "1.8.9"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -125,6 +125,8 @@ bool WorkshopCreate(uint64_t baseItem, const std::string& displayName, std::stri
 std::vector<WorkshopWeapon> WorkshopList();
 bool WorkshopRead(const WorkshopWeapon& w, int part, std::vector<uint8_t>& d, std::vector<FcbValue>& vals, std::string* err);
 bool WorkshopReadBase(const WorkshopWeapon& w, int part, std::vector<uint8_t>& d);
+std::vector<std::string> WorkshopPickupModels(const WorkshopWeapon& w);
+bool WorkshopRepointPickup(const WorkshopWeapon& w, const std::string& from, const std::string& to, std::string* err);
 bool WorkshopSet(const WorkshopWeapon& w, int part, uint32_t offset, char kind, const std::string& text, std::string* err);
 bool GameFileExists(uint64_t id);         // extract.cpp: indexes the game's archives on first use
 bool VfsModEnabled(const std::string& name);
@@ -133,6 +135,8 @@ void FileLogInstall();
 bool ResourceLogAvailable();
 void FileLogAnnotate(const std::map<uint64_t, std::string>& labels);
 int  LabelAnimationClips(std::string* msg);        // extract.cpp
+int  FindClipNames(std::string* msg);              // extract.cpp: dumps\clip_names.txt
+int  FindClipReferences(const std::string& filter, std::string* msg);
 struct ClipEvent { uint64_t tick; uint64_t id; uintptr_t ctx; };
 void ClipMonitorInstall();
 bool ClipMonitorAvailable();
@@ -142,6 +146,9 @@ void ClipMonitorClear();
 uint64_t ClipMonitorSerial();
 std::vector<ClipEvent> ClipMonitorEvents();       // newest first
 std::string ClipLabelFor(uint64_t id);
+bool ClipExportGlb(uint64_t id, std::wstring* outPath, std::string* msg);                                   // extract.cpp
+bool ClipFromGlb(uint64_t id, const std::wstring& glbFile, const std::wstring& outFile, std::string* msg);
+uint64_t ClipIdOfGlb(const std::wstring& glbFile);
 bool FileLogAtStartup();
 void FileLogSetAtStartup(bool on);
 bool ParseLogLine(const std::string& line, uint64_t* id, std::string* path, std::string* type);
@@ -158,9 +165,17 @@ std::vector<std::string> FileLogRecent(const std::string& filter, size_t max);
 bool Lzo1xDecompress(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen, size_t* got);
 bool GameFileRead(uint64_t id, std::vector<uint8_t>& out, std::string* err, std::string* from);
 bool ExtractGameFile(uint64_t id, const std::string& path, std::string* msg);
+bool DumpResourceMemory(uint64_t id, std::string* msg);
+bool WriteFileAll(const std::wstring& p, const std::vector<uint8_t>& d);
 bool ExtractModel(const std::string& path, std::string* msg);
+bool ImageToXbt(const std::vector<uint8_t>& img, char kind, std::vector<uint8_t>& out, std::string* err);
+bool ImageToXbtSplit(const std::vector<uint8_t>& img, char kind, const std::string& mip0Path, std::vector<uint8_t>& mainOut, std::vector<uint8_t>& mip0Out, std::string* err);   // texmake.cpp
+void FlatXbt(char kind, uint8_t level, std::vector<uint8_t>& out);
 bool XbgFromObj(std::vector<uint8_t>& xbg, const std::string& objText, std::string* report);   // xbgpatch.cpp
 // Edited .obj -> .xbg: the original model is read from the game (or a mod), patched, written to outFile.
+// .glb -> a completely new model on the base weapon's skeleton; files go to mods\<mod>\files\<dir>
+bool ModelFromGlb(const std::string& baseGamePath, const std::wstring& glbFile, const std::wstring& modFilesDir, const std::string& gameDir,
+                  const std::string& stem, float scale, const float move[3], std::string* outGamePath, std::string* msg);
 bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFile, const std::wstring& outFile, std::string* msg);      // .xbg + its materials + textures
 std::vector<std::string> ArchetypeModels(uint64_t id);             // .xbg paths an archetype uses
 void RunExtractJob(std::function<void()> job);

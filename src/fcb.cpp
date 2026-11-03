@@ -38,7 +38,7 @@ static void BuildNames() {
     s_namesBuilt = true;
     // a few that only appear inside longer strings, and the ones the Workshop relies on
     static const char* extra[] = { "wpnpropsWeaponProperties", "arkPickupArchetype", "ModelPath", "fileName", "hidArchetypeResId",
-                                   "disLibItemId", "Name", "ArchetypeName", "hidName" };
+                                   "disLibItemId", "Name", "ArchetypeName", "hidName", "ResIds", "ResPack", "ResList" };
     for (const char* e : extra) s_names.emplace(FcbHash(e), e);
     HMODULE m = GetModuleHandleA("FC64.dll");
     if (!m) return;
@@ -151,9 +151,12 @@ std::string FcbFormat(const std::vector<uint8_t>& d, const FcbValue& v) {
     }
     if (v.size == 1) return p[0] ? (n[0] == 'b' ? "yes" : "1") : (n[0] == 'b' ? "no" : "0");
     if (v.size == 8) { uint64_t u; memcpy(&u, p, 8); snprintf(b, sizeof(b), "%llu", (unsigned long long)u); return b; }
-    bool txt = v.size >= 1 && p[v.size - 1] == 0;
-    for (uint32_t i = 0; txt && i + 1 < v.size; ++i) if (p[i] < 0x20 || p[i] >= 0x7f) txt = false;
-    if (txt) return std::string("\"") + std::string((const char*)p, v.size - 1) + "\"";
+    // text: printable characters, then zeros (shorter text written into a longer slot is zero-padded)
+    uint32_t len = 0;
+    while (len < v.size && p[len] >= 0x20 && p[len] < 0x7f) ++len;
+    bool txt = v.size >= 1 && len < v.size && len > 0;
+    for (uint32_t i = len; txt && i < v.size; ++i) if (p[i] != 0) txt = false;
+    if (txt) return std::string("\"") + std::string((const char*)p, len) + "\"";
     std::string h;
     for (uint32_t i = 0; i < v.size && i < 12; ++i) { snprintf(b, sizeof(b), "%02x", p[i]); h += b; }
     if (v.size > 12) h += "...";

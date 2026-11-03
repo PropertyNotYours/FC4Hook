@@ -187,14 +187,44 @@ bool WorkshopSet(const WorkshopWeapon& w, int part, uint32_t offset, char kind, 
     else if (kind == 'i' && v->size == 4) { int32_t i = atoi(text.c_str()); memcpy(&d[offset], &i, 4); }
     else if (kind == 'b' && v->size == 1) d[offset] = (text == "1" || text == "yes" || text == "true") ? 1 : 0;
     else if (kind == 'u' && v->size == 8) { uint64_t u = strtoull(text.c_str(), nullptr, 10); memcpy(&d[offset], &u, 8); }
-    else if (kind == 'p' && v->size == 8) {
-        // a path hash: store the id of the path, and the readable path next to it when it fits
-        uint64_t u = FileId(text.c_str()); memcpy(&d[offset], &u, 8);
-        for (auto& x : vals)
-            if (!x.shared && x.object == v->object && x.offset + x.size + 32 > offset && x.offset < offset && x.size > 1 &&
-                d[x.offset + x.size - 1] == 0 && x.size >= text.size() + 1 && (d[x.offset] == 'g' || d[x.offset] == 'G')) {
-                memset(&d[x.offset], 0, x.size); memcpy(&d[x.offset], text.data(), text.size());
+    else if ((kind == 'p' || kind == 'R') && v->size == 8) {
+        // A model path: the 8-byte hash of its game path, with the readable path stored just
+        // before it. The archetype also lists the model in its resource list (ResPack/ResIds:
+        // files loaded with it). Only THIS slot and the matching resource-list entry change.
+        // 'R' = back to the base weapon's model for this slot.
+        std::vector<uint8_t> base;
+        bool haveBase = WorkshopReadBase(w, part, base) && base.size() == d.size();
+        uint64_t cur, orig = 0, u;
+        memcpy(&cur, &d[offset], 8);
+        if (haveBase) memcpy(&orig, &base[offset], 8);
+        std::string newText = text;
+        if (kind == 'R') {
+            if (!haveBase) { *err = "the base weapon can't be read"; return false; }
+            u = orig;
+            const FcbValue* tv = nullptr;
+            for (size_t i = 1; i < vals.size(); ++i) if (&vals[i] == v) tv = &vals[i - 1];
+            if (tv && !tv->shared && tv->offset + tv->size <= base.size()) newText = std::string((const char*)&base[tv->offset], strnlen((const char*)&base[tv->offset], tv->size));
+        } else u = FileId(text.c_str());
+        // other model slots that still use a hash: those entries in the resource list must stay
+        auto usedElsewhere = [&](uint64_t h) {
+            for (auto& x : vals) if (!x.shared && x.offset != offset && x.size == 8 && x.name == "ModelPath") {
+                uint64_t o; memcpy(&o, &d[x.offset], 8); if (o == h) return true; }
+            return false;
+        };
+        for (auto& x : vals) {
+            if (x.shared || x.name != "ResIds" || x.size < 12) continue;
+            for (uint32_t k = x.offset + 4; k + 8 <= x.offset + x.size; k += 8) {
+                uint64_t r; memcpy(&r, &d[k], 8);
+                if ((r == cur && cur != u && !usedElsewhere(cur)) || (r == orig && orig != u && orig != cur && !usedElsewhere(orig)))
+                    memcpy(&d[k], &u, 8);
             }
+        }
+        memcpy(&d[offset], &u, 8);
+        // the readable path (value just before the hash), when the new one fits
+        for (size_t i = 1; i < vals.size(); ++i) if (&vals[i] == v) {
+            const FcbValue& t = vals[i - 1];
+            if (!t.shared && t.size > 1 && t.size >= newText.size() + 1) { memset(&d[t.offset], 0, t.size); memcpy(&d[t.offset], newText.data(), newText.size()); }
+        }
     }
     else { *err = "can't edit that kind of value"; return false; }
     std::vector<FcbValue> chk;
@@ -204,6 +234,49 @@ bool WorkshopSet(const WorkshopWeapon& w, int part, uint32_t offset, char kind, 
 }
 
 // The base weapon's value at the same place, for "default" columns. Same layout as the copy.
+// The pickup (the weapon lying on the ground) doesn't have a ModelPath like the item: its model path
+// is written as text inside a packed descriptor and a graphic component. These find and swap it.
+std::vector<std::string> WorkshopPickupModels(const WorkshopWeapon& w) {
+    std::vector<std::string> r; std::vector<uint8_t> d;
+    if (!w.ids[2] || !ReadDisk(ArkFile(w.mod, w.ids[2]), d)) return r;
+    std::string cur;
+    for (size_t i = 0; i <= d.size(); ++i) {
+        char c = i < d.size() ? (char)d[i] : 0;
+        if (c >= 0x20 && c < 0x7f) { cur += c; continue; }
+        std::string l = cur; for (auto& ch : l) ch = (char)tolower((unsigned char)ch);
+        size_t g = l.find("graphics\\");
+        if (g != std::string::npos && l.size() > 4 && l.compare(l.size() - 4, 4, ".xbg") == 0) {
+            std::string pth = cur.substr(g), lp = l.substr(g);
+            bool dup = false;
+            for (auto& x : r) { std::string lx = x; for (auto& ch : lx) ch = (char)tolower((unsigned char)ch); if (lx == lp) dup = true; }
+            if (!dup) r.push_back(pth);
+        }
+        cur.clear();
+    }
+    return r;
+}
+
+// Every copy of `from` (any case) becomes `to` (same length), and its file id too.
+bool WorkshopRepointPickup(const WorkshopWeapon& w, const std::string& from, const std::string& to, std::string* err) {
+    if (from.size() != to.size()) { *err = "the new path must be as long as the old one"; return false; }
+    std::vector<uint8_t> d;
+    if (!w.ids[2] || !ReadDisk(ArkFile(w.mod, w.ids[2]), d)) { *err = "can't read the pickup archetype"; return false; }
+    int n = 0;
+    for (size_t i = 16; i + from.size() <= d.size(); ++i) {
+        bool eq = true;
+        for (size_t k = 0; k < from.size() && eq; ++k) eq = tolower(d[i + k]) == tolower((unsigned char)from[k]);
+        if (!eq) continue;
+        memcpy(&d[i], to.data(), to.size()); ++n; i += from.size() - 1;
+    }
+    std::string lf = from, lt = to;
+    for (auto& c : lf) c = (char)tolower((unsigned char)c);
+    for (auto& c : lt) c = (char)tolower((unsigned char)c);
+    n += FcbReplaceU64(d, FileId(lf.c_str()), FileId(lt.c_str()));
+    if (!n) { *err = "the pickup doesn't mention " + from; return false; }
+    if (!WriteDisk(ArkFile(w.mod, w.ids[2]), d.data(), d.size())) { *err = "can't write the pickup archetype"; return false; }
+    return true;
+}
+
 bool WorkshopReadBase(const WorkshopWeapon& w, int part, std::vector<uint8_t>& d) {
     WeaponChain b;
     if (!WeaponChainOf(w.base, &b)) return false;

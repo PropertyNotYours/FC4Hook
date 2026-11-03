@@ -616,6 +616,8 @@ static std::string ClipLabel(const std::vector<uint8_t>& d, const std::set<std::
 // names: (1) read every archive file and hash each ".mab" path written inside one; (2) guess:
 // every animations folder seen x every clip file name seen, also with the weapon name
 // swapped for every other weapon. Hits go to dumps\clip_names.txt (id<TAB>path).
+static size_t s_clipNameCount = 0;
+static size_t LoadClipNamesCount() { return s_clipNameCount; }
 static std::map<uint64_t, std::string> LoadClipNames() {
     std::map<uint64_t, std::string> r;
     FILE* f = _wfopen((g_rootDir + L"dumps\\clip_names.txt").c_str(), L"rb");
@@ -629,15 +631,22 @@ static std::map<uint64_t, std::string> LoadClipNames() {
         r[_strtoui64(l.substr(0, 16).c_str(), nullptr, 16)] = l.substr(17);
     }
     fclose(f);
+    s_clipNameCount = r.size();
     return r;
 }
 static std::string ClipStem(const std::string& path);
 // "1stge_..." etc. for a clip id ("" if unknown); loads dumps\clip_names.txt once.
 std::string ClipNameOf(uint64_t id) {
-    static std::once_flag once; static std::map<uint64_t, std::string> m;
-    std::call_once(once, [] { m = LoadClipNames(); });
+    static std::mutex mx; static std::map<uint64_t, std::string> m; static uint64_t tried = 0;
+    std::lock_guard<std::mutex> lk(mx);
+    uint64_t now = GetTickCount64();
+    if (m.empty() && (tried == 0 || now - tried > 5000)) {      // (re)load until it has names
+        tried = now; m = LoadClipNames();
+        Log("clip names: %zu loaded from dumps\\clip_names.txt", m.size());
+    }
     auto it = m.find(id); return it == m.end() ? std::string() : ClipStem(it->second);
 }
+size_t ClipNamesLoaded() { ClipNameOf(0); return LoadClipNamesCount(); }
 static std::string ClipStem(const std::string& path) {
     size_t s = path.find_last_of('\\'); std::string n = s == std::string::npos ? path : path.substr(s + 1);
     if (n.size() > 4) n.resize(n.size() - 4);

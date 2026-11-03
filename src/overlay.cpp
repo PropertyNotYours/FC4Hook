@@ -2361,6 +2361,7 @@ static void WsAnimations(const WorkshopWeapon& w) {
     if (ImGui::Checkbox("Watch##wsa", &cm)) ClipMonitorSetEnabled(cm);
     ImGui::SameLine(); if (ImGui::Button("Clear##wsa")) ClipMonitorClear();
     ImGui::SameLine(); ImGui::Checkbox("Sort by name", &byNameUi);
+    ImGui::SameLine(); ImGui::TextDisabled("(%zu clip names)", ClipNamesLoaded());
     ImGui::SameLine(); if (ImGui::Button("Open the exported folder")) {
         std::wstring dir = g_rootDir + L"dumps\\animations\\"; CreateDirectoryW((g_rootDir + L"dumps").c_str(), nullptr); CreateDirectoryW(dir.c_str(), nullptr);
         ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);

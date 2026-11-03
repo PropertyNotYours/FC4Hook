@@ -684,7 +684,7 @@ bool ArmsSnapshot(std::string* msg) {
 // 65_workshop.lua). At clip start the node's animation resource (+0x28) is swapped for ours for
 // that one call; the node keeps its own. Ours are loaded through the resource manager like any clip
 // (CAnimationResource type FC64+0x4f4030) and kept alive.
-struct ClipOv { uint64_t item, orig, nid; void* res; };
+struct ClipOv { uint64_t item, orig, nid; void* res; bool dep = false; bool logged = false; };
 static std::vector<ClipOv> s_ov;
 static bool s_ovScanned = false;
 static void ClipOvScan() {
@@ -701,7 +701,7 @@ static void ClipOvScan() {
             std::string n = Narrow(fd.cFileName);
             size_t u = n.find('_');
             if (u == std::string::npos || n.size() < u + 1 + 16 + 4) continue;
-            ClipOv o; o.item = _strtoui64(n.substr(0, u).c_str(), nullptr, 10);
+            ClipOv o{}; o.item = _strtoui64(n.substr(0, u).c_str(), nullptr, 10);
             o.orig = _strtoui64(n.substr(u + 1, 16).c_str(), nullptr, 16);
             std::string lo = n; for (auto& c : lo) c = (char)tolower((unsigned char)c);
             o.nid = FileId(("fc4hook\\clips\\" + lo).c_str()); o.res = nullptr;
@@ -738,9 +738,18 @@ static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_
             uint64_t now = GetTickCount64();
             if (now - s_heldTick > 100) { s_heldTick = now; s_heldItem = _strtoui64(GetState("weapon.item").c_str(), nullptr, 10); }
             uint64_t cid = *(uint64_t*)((uint8_t*)node + 0x38);
+            uintptr_t base = FC64Base();
+            typedef void* (*Data_t)(void*); typedef void (*AddDep_t)(void*, void*);
             for (auto& o : s_ov) {
-                if (!o.res) ClipOvResource(o);                       // start loading them all early
-                if (o.item == s_heldItem && o.orig == cid && o.res) { resSlot = (void**)((uint8_t*)node + 0x28); oldRes = *resSlot; *resSlot = o.res; }
+                if (!o.res) ClipOvResource(o);
+                if (!o.res || o.orig != cid) continue;
+                void* cur = *(void**)((uint8_t*)node + 0x28);
+                // a resource only loads when something that's loaded depends on it: hang ours on the game's clip
+                if (!o.dep && cur) { ((AddDep_t)(base + 0xcf5e0))(cur, o.res); o.dep = true; LogL(LOG_INFO, "per-weapon clip %016llx: loading", (unsigned long long)o.nid); }
+                if (o.item != s_heldItem) continue;
+                bool ready = ((Data_t)(base + 0x4e7d00))(o.res) != nullptr;    // its animation data (+0x60) is in
+                if (!ready) { if (!o.logged) { o.logged = true; LogL(LOG_WARN, "per-weapon clip %016llx not loaded yet: playing the game's", (unsigned long long)o.nid); } continue; }
+                resSlot = (void**)((uint8_t*)node + 0x28); oldRes = cur; *resSlot = o.res;
             }
         }
     }

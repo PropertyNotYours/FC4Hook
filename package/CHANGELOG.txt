@@ -1,6 +1,15 @@
 FC4Hook changelog
 =================
 
+1.12.3
+  - Fix: a per-weapon clip made the hands disappear - the clip was never loaded (a resource only loads when
+    something loaded depends on it). It's now hung on the game's own clip so it loads, and until it has, the
+    game's clip plays instead.
+
+1.12.2
+  - Fix: clip names didn't show in Workshop > Animations (the names file was read once, too early, and the
+    empty result kept). It's re-read until it has names; the tab shows how many are loaded.
+
 1.12.1
   - Workshop > Animations names the clips: "Reload (2.00 s)", "Shoot (0.67 s)", "Reload (empty, aiming)"... (from
     File log > Find clip names), sorted by name (Sort by name), each clip once.

@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.12.1"
+#define FC4HOOK_VERSION      "1.12.3"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -139,7 +139,8 @@ void FileLogAnnotate(const std::map<uint64_t, std::string>& labels);
 int  LabelAnimationClips(std::string* msg);        // extract.cpp
 int  FindClipNames(std::string* msg);              // extract.cpp: dumps\clip_names.txt
 int  FindClipReferences(const std::string& filter, std::string* msg);
-std::string ClipNameOf(uint64_t id);                // extract.cpp
+std::string ClipNameOf(uint64_t id);
+size_t ClipNamesLoaded();                // extract.cpp
 bool ArmsSnapshot(std::string* msg);                 // vfs.cpp: dumps\\arms_snapshot_N.bin
 struct ClipEvent { uint64_t tick; uint64_t id; uintptr_t ctx; };
 void ClipMonitorInstall();

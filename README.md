@@ -48,7 +48,7 @@ cheats.txt, positions.txt   cheat switches / saved positions (written by 40_chea
 | `ModLog(...)`, `ModLogDebug/Warn/Error(...)` | write to `fc4hook.log` and the console at that level |
 | `ModWriteFile(path, text [, append])`, `ModReadFile(path)`, `ModFileExists(path)` | files under `bin\fc4hook\` |
 | `ModSetState(key, value)`, `ModGetState(key)` | key/value store shared with the menu and plugins |
-| `ModVersion()` | `"1.12.3"` |
+| `ModVersion()` | `"1.12.6"` |
 | `ModArchiveStatus()`, `ModLoadStrings(path)` | mod archive state / add a strings.bin |
 | `ModLooseStatus()` | loose-file mods status |
 | `ModFileId(path)` | the game's file id (CRC-64 of the lower-case path) as a decimal string |

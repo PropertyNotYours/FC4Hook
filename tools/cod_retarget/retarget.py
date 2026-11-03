@@ -86,7 +86,7 @@ ARM = {'j_shoulder_le': 'LeftArm', 'j_elbow_le': 'LeftForeArm', 'j_wrist_le': 'L
 FING = {'index': 'Index', 'mid': 'Middle', 'ring': 'Ring', 'pinky': 'Pinky'}
 for side, S in (('le', 'Left'), ('ri', 'Right')):
     for c, f in FING.items():
-        for k in (1, 2, 3): ARM['j_%s_%s_%d' % (c, side, k)] = '%sHand%s%d' % (S, f, k)
+        for k in (0, 1, 2): ARM['j_%s_%s_%d' % (c, side, k)] = '%sHand%s%d' % (S, f, k + 1)   # CoD counts from 0
     for k in (0, 1, 2): ARM['j_thumb_%s_%d' % (side, k)] = '%sHandThumb%d' % (S, k + 1)
 GUNPARTS = {'tag_battery_1': 'CLIP', 'tag_battery_2': 'CLIP_BULLET', 'j_clip_release': 'SLIDE_LOCK'}
 
@@ -174,8 +174,12 @@ def run(anim, arms, gun, glb_in, glb_out, idle=None, gun_root='gun_88dcc141'):
     Fgw = inv(W0[ni['RightHand']]) @ W0[gi]
     def mapRigid(E):                     # a CoD rigid change (in some CoD frame) -> same frame mapped to glTF axes, FC4 scale
         return T(R @ E[:3, :3] @ R.T, s * (R @ E[:3, 3]))
+    def smooth(x): x = min(max(x, 0.0), 1.0); return x * x * (3 - 2 * x)
+    EIN, EOUT = 10, 18                   # frames to ease the left hand off/onto FC4's grip
     for f in range(nk):
         Wt = {}; ik = None
+        wL = smooth(f / EIN) * smooth((nk - 1 - f) / EOUT)
+        grip = lambda i: Wt[ni['RightHand']] @ inv(W0[ni['RightHand']]) @ W0[i]
         for i in order:
             p = par.get(i); Wp = Wt[p] if p is not None else np.eye(4)
             L = T(q2m(loc[i][0]), loc[i][1])
@@ -188,7 +192,10 @@ def run(anim, arms, gun, glb_in, glb_out, idle=None, gun_root='gun_88dcc141'):
                     Pt = (Wt[ni['RightHand']] @ T(None, s * Orh.T @ lw[:3, 3]))[:3, 3] if ni['RightHand'] in Wt else None
                     if Pt is None:
                         Pt = W0[ni['LeftHand']][:3, 3]
+                    Pt = (1 - wL) * grip(ni['LeftHand'])[:3, 3] + wL * Pt
+                    S = (1 - wL) * W0[i][:3, 3] + wL * S
                     Ep = S + s * R @ (C[f]['j_elbow_le'][:3, 3] - C[f]['j_shoulder_le'][:3, 3])
+                    Ep = (1 - wL) * W0[ni['LeftForeArm']][:3, 3] + wL * Ep
                     dvec = Pt - S; d = min(np.linalg.norm(dvec), (lenU + lenF) * 0.999); u = dvec / np.linalg.norm(dvec)
                     a_ = (lenU**2 - lenF**2 + d**2) / (2 * d); h = np.sqrt(max(lenU**2 - a_**2, 0))
                     pv = (Ep - S) - np.dot(Ep - S, u) * u
@@ -203,6 +210,9 @@ def run(anim, arms, gun, glb_in, glb_out, idle=None, gun_root='gun_88dcc141'):
             if nm in byFc4:
                 k = byFc4[nm]
                 Rw = mapR(C[f][k]) @ off[k]
+                if wL < 1 and nm != 'LeftArm' and under(i, la) and not k.startswith(('j_shoulder', 'j_elbow')):
+                    Rg = grip(i)[:3, :3] if nm == 'LeftHand' else (Wp @ inv(W0[par[i]]) @ W0[i])[:3, :3]
+                    Rw = q2m(slerp(m2q(Rg), m2q(Rw), wL))
                 pw = (Wp @ L)[:3, 3]
                 if nm == 'LeftHand': pw = ik['F'][1]
                 if k.startswith('j_shoulder'):

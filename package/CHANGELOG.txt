@@ -1,6 +1,20 @@
 FC4Hook changelog
 =================
 
+1.12.6
+  - Animations tab: "Only for this weapon" now starts unticked. Per-weapon clips don't load in game yet,
+    so a clip saved that way silently did nothing.
+
+1.12.5
+  - Fixed: "Use my .glb" could freeze and then crash the game while rebuilding a gun's part animation
+    (a padding loop that could never finish). Converter errors now show as a message instead.
+
+1.12.4
+  - Fixed: reloading a weapon with a per-weapon custom clip crashed the game.
+  - Per-weapon clips now load with the weapon: FC4Hook lists them in the weapon's dependency
+    list (done when you press "Use my .glb" with "Only for this weapon", when you apply Arms, or
+    with the new "Load my custom clips with this weapon" button). Restart the game after.
+
 1.12.3
   - Fix: a per-weapon clip made the hands disappear - the clip was never loaded (a resource only loads when
     something loaded depends on it). It's now hung on the game's own clip so it loads, and until it has, the

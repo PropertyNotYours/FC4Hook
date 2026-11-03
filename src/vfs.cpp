@@ -739,13 +739,12 @@ static void hk_ClipStart(void* node, void* ctx, uint64_t a3, uint64_t a4, uint8_
             if (now - s_heldTick > 100) { s_heldTick = now; s_heldItem = _strtoui64(GetState("weapon.item").c_str(), nullptr, 10); }
             uint64_t cid = *(uint64_t*)((uint8_t*)node + 0x38);
             uintptr_t base = FC64Base();
-            typedef void* (*Data_t)(void*); typedef void (*AddDep_t)(void*, void*);
+            typedef void* (*Data_t)(void*);
             for (auto& o : s_ov) {
                 if (!o.res) ClipOvResource(o);
                 if (!o.res || o.orig != cid) continue;
                 void* cur = *(void**)((uint8_t*)node + 0x28);
-                // a resource only loads when something that's loaded depends on it: hang ours on the game's clip
-                if (!o.dep && cur) { ((AddDep_t)(base + 0xcf5e0))(cur, o.res); o.dep = true; LogL(LOG_INFO, "per-weapon clip %016llx: loading", (unsigned long long)o.nid); }
+                // loaded through the weapon's dependency list (WorkshopSyncClipDeps); never add deps from here (crashed)
                 if (o.item != s_heldItem) continue;
                 bool ready = ((Data_t)(base + 0x4e7d00))(o.res) != nullptr;    // its animation data (+0x60) is in
                 if (!ready) { if (!o.logged) { o.logged = true; LogL(LOG_WARN, "per-weapon clip %016llx not loaded yet: playing the game's", (unsigned long long)o.nid); } continue; }

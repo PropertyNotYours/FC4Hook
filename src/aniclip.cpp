@@ -581,7 +581,7 @@ template <class F> static Bytes AnimRegion(int keys, F block) {
 }
 
 bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& out, std::string* report, int bits = 16,
-             const std::map<uint32_t, std::string>* nameOverride = nullptr, bool nested = true) {
+             const std::map<uint32_t, std::string>* nameOverride = nullptr, bool nested = true, bool allowNone = false) {
     std::string& R = *report;
     if (tmpl.size() < C + 0x50 || memcmp(&tmpl[C], "aNi", 3) != 0) { R = "the clip to replace isn't an animation clip"; return false; }
     if (r16(tmpl, C + 4) & 0x4000) { R = "the clip to replace uses a header layout FC4Hook doesn't write yet"; return false; }
@@ -628,7 +628,7 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
             for (auto& q : rot[t]) q = qmul(inv, q);
         }
     }
-    if (fromGlb == 0) { R = "none of the .glb's bones match this clip's bones (use a .glb exported by FC4Hook from a game clip)"; return false; }
+    if (fromGlb == 0 && !allowNone) { R = "none of the .glb's bones match this clip's bones (use a .glb exported by FC4Hook from a game clip)"; return false; }
     // classify
     std::vector<uint8_t> flags(ntr, 0); std::vector<int> crot, arot, cpos, apos;
     for (int t = 0; t < ntr; ++t) {
@@ -678,7 +678,10 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
         size_t o = secs[k].off, end = k + 1 < secs.size() ? secs[k + 1].off : clipEnd;
         int f = secs[k].field;
         bool rebuilt = f < 10 && reg.count(F[f][0]);
-        while (body.size() % 4 || (!rebuilt && (body.size() - o) % 16)) body.push_back(0);
+        // keep a copied section where it sat relative to 16 bytes; if it wasn't 4-aligned itself (gun
+        // clips can be), 4-aligning too can never be met - that looped forever (1.12.4 crash)
+        if (rebuilt || o % 4 == 0) { while (body.size() % 4 || (!rebuilt && (body.size() - o) % 16)) body.push_back(0); }
+        else { while ((body.size() - o) % 16) body.push_back(0); }
         size_t start = body.size();
         if (rebuilt) { const Bytes& r = reg[F[f][0]]; body.insert(body.end(), r.begin(), r.end()); produced[F[f][0]] = true; }
         else if (f == 100) { body.insert(body.end(), flags.begin(), flags.end()); body.insert(body.end(), tmpl.begin() + C + o + ntr, tmpl.begin() + C + end); }
@@ -721,18 +724,26 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
             for (auto& kv : std::map<uint32_t, std::string>(gnames)) {     // gun_<hash> names stand for that hash
                 if (kv.second.size() == 12 && kv.second.compare(0, 4, "gun_") == 0) gnames[(uint32_t)strtoul(kv.second.c_str() + 4, nullptr, 16)] = kv.second;
             }
-            Bytes nf = NestedAsFile(out, ns.e[0]), nout; std::string nr;
-            if (FromGlb(nf, glbFile, skel, nout, &nr, bits, &gnames, false)) {
-                // the new gun clip goes at the end of the file and entry 0 points at it; nothing else moves
-                // (the other nested clip and the tables keep their places)
-                Bytes n2 = out;
+            // every nested clip is rewritten to the new length (entry 0 from the .glb's gun bones; the others keep
+            // their own keys, stretched); each new clip goes at the end of the file and its entry points at it
+            Bytes n2 = out; std::string nr0; bool okAll = true;
+            for (size_t k = 0; k < ns.e.size(); ++k) {
+                Bytes nf = NestedAsFile(out, ns.e[k]), nout; std::string nr;
+                if (!FromGlb(nf, glbFile, skel, nout, &nr, bits, &gnames, false, true)) {
+                    if (k == 0) { okAll = false; R += "; (gun parts not written: " + nr + ")"; break; }
+                    continue;                                   // a layout we can't write yet: that one stays as it was
+                }
+                if (k == 0) nr0 = nr;
                 while ((n2.size() - C) % 16) n2.push_back(0);
                 size_t at = n2.size();
                 n2.insert(n2.end(), nout.begin() + C, nout.end());
-                uint32_t rel = (uint32_t)(at - ns.e[0].entry);
-                memcpy(&n2[ns.e[0].entry + 8], &rel, 4);
-                Clip chk2; std::string e3; Nested ns2;
-                if (Decode(n2, chk2, &e3) && ParseNested(n2, ns2) && Decode(NestedAsFile(n2, ns2.e[0]), chk2, &e3)) { out.swap(n2); R += "; gun parts: " + nr; }
+                uint32_t rel = (uint32_t)(at - ns.e[k].entry);
+                memcpy(&n2[ns.e[k].entry + 8], &rel, 4);
+            }
+            if (okAll) {
+                Clip chk2; std::string e3; Nested ns2; bool good = Decode(n2, chk2, &e3) && ParseNested(n2, ns2);
+                { Clip g; good = good && !ns2.e.empty() && Decode(NestedAsFile(n2, ns2.e[0]), g, &e3) && g.frames == frames; }
+                if (good) { out.swap(n2); R += "; gun parts: " + nr0; }
                 else R += "; (gun parts not written: " + e3 + ")";
             }
         }

@@ -448,7 +448,9 @@ bool ClipFromGlb(uint64_t id, const std::wstring& glbFile, const std::wstring& o
                ". Use it on that clip's row, or use the \"finds its clip\" box at the top.";
         return false;
     }
-    if (!AniClipFromGlb(tmpl, glb, skel, out, &rep)) { *msg = "Not converted: " + rep; return false; }
+    bool okc = false;
+    try { okc = AniClipFromGlb(tmpl, glb, skel, out, &rep); } catch (const std::exception& e) { rep = std::string("converter error: ") + e.what(); }
+    if (!okc) { *msg = "Not converted: " + rep; return false; }
     for (size_t k = 0; k < outFile.size(); ++k) if (outFile[k] == L'\\' && k > 2) CreateDirectoryW(outFile.substr(0, k).c_str(), nullptr);
     if (!WriteFileAll(outFile, out)) { *msg = "can't write " + Narrow(outFile); return false; }
     *msg = "Converted: " + rep + ". Restart the game (or reload the save) to see it.";

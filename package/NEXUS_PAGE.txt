@@ -1,7 +1,7 @@
 === NEXUS MODS PAGE TEXT (paste the parts below into the Nexus form) ===
 
 MOD NAME:   FC4Hook - Script Hook and Mod Menu
-VERSION:    1.12.3
+VERSION:    1.12.6
 CATEGORY:   Utilities  (alt: Cheats and God Items)
 SUMMARY (short description, max 350 chars):
 An in-game mod menu and script hook for Far Cry 4. Cheats that stay on (god mode, infinite ammo, slow-mo, time of day, teleports), an Armory with every weapon in the game, bell tower fast travel, a co-op tower reward fix, a proper log/console, and Lua + C++ modding support.
@@ -11,8 +11,8 @@ REQUIREMENTS (Nexus "Requirements" section):
   - Far Cry 4 PC, patch 1.10
 
 FILES TO UPLOAD:
-  Main file:     FC4Hook-1.12.3.zip           ("FC4Hook 1.12.3")
-  Optional file: FC4Hook-1.12.3-source.zip    ("FC4Hook 1.12.3 source code + plugin SDK")
+  Main file:     FC4Hook-1.12.6.zip           ("FC4Hook 1.12.6")
+  Optional file: FC4Hook-1.12.6-source.zip    ("FC4Hook 1.12.6 source code + plugin SDK")
 
 === DESCRIPTION (BBCode) ===
 
@@ -38,7 +38,7 @@ FC4Hook loads into Far Cry 4 and adds an in-game menu (press [b]F8[/b]). It talk
 [list=1]
 [*]Install [url=https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases]Ultimate ASI Loader[/url] (x64): put its dll in [i]Far Cry 4\bin\[/i] named [b]winmm.dll[/b].
 [*]Copy the contents of the archive's [b]bin[/b] folder into [i]Far Cry 4\bin\[/i].
-[*]Start the game. A green "FC4Hook v1.12.3 loaded" banner appears. Load a save and press [b]F8[/b] (gamepad: hold both sticks in).
+[*]Start the game. A green "FC4Hook v1.12.6 loaded" banner appears. Load a save and press [b]F8[/b] (gamepad: hold both sticks in).
 [/list]
 Vortex: install as normal, then make sure [i]fc4hook.asi[/i] ended up in [i]Far Cry 4\bin\[/i].
 

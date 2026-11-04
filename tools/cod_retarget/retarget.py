@@ -44,12 +44,20 @@ def cod_worlds(anim_path, arms_path, gun_path):
                 return slerp(v0, v1, u) if slerpq else (1-u)*np.array(v0) + u*np.array(v1)
         return np.array(keys[-1][1])
     frames = A['frames']
+    relpos = set()
+    for b in bones:
+        k = A['tracks'].get(b['name'], {}).get('pos', [])
+        if k and np.linalg.norm(k[0][1]) < 0.01 and np.linalg.norm(b['lpos']) > 1.0: relpos.add(b['name'])
+    if relpos: print('position offsets from bind:', sorted(relpos))
     out = []
     for f in range(frames + 1):
         W = [None]*len(bones)
         for i, b in enumerate(bones):
             tr = A['tracks'].get(b['name'], {})
             p = sample(tr.get('pos', []), f, False); q = sample(tr.get('rot', []), f, True)
+            # some tracks (the Ray Gun's batteries) store positions as offsets from the bind pose: their first
+            # key is ~0 while the bone sits well away from its parent. Read those as bind + offset.
+            if p is not None and b['name'] in relpos: p = np.array(b['lpos']) + p
             L = T(q2m(q if q is not None else b['lrot']), p if p is not None else np.array(b['lpos']))
             W[i] = L if b['parent'] < 0 else W[b['parent']] @ L
         out.append({b['name']: W[i] for i, b in enumerate(bones)})

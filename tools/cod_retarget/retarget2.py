@@ -5,13 +5,14 @@ the same: the gun follows CoD's path from where FC4 holds it, the right hand sta
 hand goes where CoD's is relative to the gun (easing from/to FC4's two-handed grip at the ends), and both
 arms are solved back to fixed shoulders with 2-bone IK.
 
-usage: retarget2.py <anim.seanim> <arms.semodel> <gun.semodel> <fc4clip.glb> <out.glb> [gunmove=0.6]
+usage: retarget2.py <anim.seanim> <arms.semodel> <gun.semodel> <fc4clip.glb> <out.glb> [gunmove=0.6] [gunturn=1] [near=1]
 """
 import sys, json, struct, numpy as np
 from retarget import (cod_worlds, load_glb, fc4_pose0, fc4_rest, swing, T, inv, q2m, m2q, slerp,
                       ARM, GUNPARTS)
 import semodel
 
+DEBUG = False   # True: print how close each hand gets to its target
 R = np.array([[0., -1., 0.], [0., 0., 1.], [-1., 0., 0.]])     # CoD x fwd, y left, z up -> glTF
 def mapR(M): return R @ M[:3, :3]
 def smooth(x): x = min(max(x, 0.0), 1.0); return x * x * (3 - 2 * x)
@@ -24,7 +25,9 @@ def ik2(S, target, lu, lf, pole):
     pv = pv / np.linalg.norm(pv) if np.linalg.norm(pv) > 1e-9 else np.array([0., -1., 0.])
     return S + a * u + h * pv, S + dist * u
 
-def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gun_root='gun_88dcc141'):
+def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gunturn=1.0, near=1.0, gun_root='gun_88dcc141'):
+    # gunmove: share of CoD's gun movement; gunturn: share of its turning; near: share of how far the left
+    # hand and the gun parts (batteries) get from the gun (1 = CoD's; less keeps them by the gun, in view)
     C, A = cod_worlds(anim, arms, gun)
     j, b = load_glb(glb_in)
     N, par, loc, W0 = fc4_pose0(j, b)
@@ -66,14 +69,24 @@ def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gun_root='gun_88dcc141'):
         Cf = C[f]; wL = smooth(f / EIN) * smooth((nk - 1 - f) / EOUT)
         # 1. gun: CoD's turn since its first frame, about the gun; CoD's move, damped
         Rd = R @ Cf['tag_weapon'][:3, :3] @ Cg0[:3, :3].T @ R.T
+        if gunturn != 1.0: Rd = q2m(slerp(np.array([0., 0., 0., 1.]), m2q(Rd), gunturn))
         G = T(Rd @ G0[:3, :3], G0[:3, 3] + gunmove * s * R @ (Cf['tag_weapon'][:3, 3] - Cg0[:3, 3]))
         gripOf = lambda nm: G @ inv(G0) @ W0[ni[nm]]
         # 2. hand targets
         tgt = {'Right': gripOf('RightHand')}
         gl = gripOf('LeftHand')
         if 'j_wrist_le' in Cf:
-            pc = G[:3, 3] + s * R @ (Cf['j_wrist_le'][:3, 3] - Cf['tag_weapon'][:3, 3])
-            rc = mapR(Cf['j_wrist_le']) @ off['j_wrist_le']
+            # CoD's left wrist in CoD's gun frame -> FC4's gun frame (so it turns with our, maybe damped, gun)
+            Lg = inv(Cf['tag_weapon']) @ Cf['j_wrist_le']
+            GO = G[:3, :3] @ Og.T                                    # CoD gun axes -> world, for our gun
+            # measured from the battery (whose trip away from the gun is shortened by `near`): within
+            # 10 in of it the hand keeps CoD's offset (it's holding it); further trips are shortened too
+            bat = (inv(Cf['tag_weapon']) @ Cf['tag_battery_1'])[:3, 3]; bat0 = (inv(Cg0) @ C[0]['tag_battery_1'])[:3, 3]
+            batS = bat0 + near * (bat - bat0)
+            hv = Lg[:3, 3] - bat; hd = np.linalg.norm(hv)
+            if hd > 10: hv = hv / hd * (10 + near * (hd - 10))
+            pc = G[:3, 3] + s * GO @ (batS + hv)
+            rc = GO @ Lg[:3, :3] @ off['j_wrist_le']
             p = (1 - wL) * gl[:3, 3] + wL * pc
             r = q2m(slerp(m2q(gl[:3, :3]), m2q(rc), wL))
             tgt['Left'] = T(r, p)
@@ -84,11 +97,21 @@ def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gun_root='gun_88dcc141'):
         over = {}
         for side, a in arm.items():
             S_ = W0[a['U']][:3, 3]; poleFC = W0[a['F']][:3, 3]
+            # out of reach: swing the collarbone so the shoulder comes forward (like CoD's shoulder does), up to 10 cm
+            cl = par.get(a['U'])
+            need = np.linalg.norm(tgt[side][:3, 3] - S_) - (a['lu'] + a['lf']) * 0.98
+            if cl is not None and need > 0:
+                Cp = W0[cl][:3, 3]; dirT = tgt[side][:3, 3] - S_; dirT /= np.linalg.norm(dirT)
+                S2 = S_ + min(need, 0.10) * dirT
+                Sw = swing(S_ - Cp, S2 - Cp)
+                over[cl] = T(Sw @ W0[cl][:3, :3], Cp)
+                S_ = Cp + Sw @ (S_ - Cp)
             pole = poleFC
             if side == 'Left' and 'j_elbow_le' in Cf:
                 pc = S_ + s * R @ (Cf['j_elbow_le'][:3, 3] - Cf['j_shoulder_le'][:3, 3])
                 pole = (1 - wL) * poleFC + wL * pc
             El, Wr = ik2(S_, tgt[side][:3, 3], a['lu'], a['lf'], pole)
+            if DEBUG and f % 10 == 0: print(f, side, 'target miss %.3f m' % np.linalg.norm(Wr - tgt[side][:3, 3]), 'reach %.3f / %.3f' % (np.linalg.norm(tgt[side][:3, 3] - S_), a['lu'] + a['lf']))
             over[a['U']] = T(swing(a['refU'], El - S_) @ W0[a['U']][:3, :3], S_)
             over[a['F']] = T(swing(a['refF'], Wr - El) @ W0[a['F']][:3, :3], El)
             over[a['H']] = T(tgt[side][:3, :3], Wr)
@@ -110,7 +133,7 @@ def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gun_root='gun_88dcc141'):
         for k, nm in GUNPARTS.items():
             if nm not in ni or k not in Cf: continue
             E = inv(Cf['tag_weapon']) @ Cf[k] @ inv(inv(Cg0) @ C[0][k])
-            Ef = T(Og.T @ E[:3, :3] @ Og, s * Og.T @ E[:3, 3])
+            Ef = T(Og.T @ E[:3, :3] @ Og, near * s * Og.T @ E[:3, 3])
             Wt[ni[nm]] = G @ Ef @ inv(G0) @ W0[ni[nm]]
         for nm in ('FRAME', 'SLIDE', 'HAMMER'):
             if nm in ni: Wt[ni[nm]] = G @ inv(G0) @ W0[ni[nm]]
@@ -146,4 +169,5 @@ def run(anim, arms, gun, glb_in, glb_out, gunmove=0.6, gun_root='gun_88dcc141'):
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    run(a[0], a[1], a[2], a[3], a[4], float(a[5]) if len(a) > 5 else 0.6)
+    f = lambda i, d: float(a[i]) if len(a) > i else d
+    run(a[0], a[1], a[2], a[3], a[4], f(5, 0.6), f(6, 1.0), f(7, 1.0))

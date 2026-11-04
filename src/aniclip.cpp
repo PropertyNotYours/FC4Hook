@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <functional>
 #include <array>
 #include <algorithm>
@@ -230,6 +231,7 @@ static Q qmul(Q a, Q b) {
              a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
 }
 static float qdot(Q a, Q b) { return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w; }
+static V qrotv(Q q, V v) { Q r = qmul(qmul(q, { v.x, v.y, v.z, 0 }), { -q.x, -q.y, -q.z, q.w }); return { r.x, r.y, r.z }; }
 
 // ------------------------------------------------------------------ clip -> .glb
 static void put32(Bytes& b, uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back((uint8_t)(v >> (8 * i))); }
@@ -263,7 +265,7 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
     };
     // the gun's own animation (nested clip 0): its bones become extra nodes hanging from the hand
     struct GunNode { std::string name; int parent; Q q; V t; int track; };   // parent: -1-k = arm node k, else gun node index
-    std::vector<GunNode> gun; Clip gc; bool haveGun = false;
+    std::vector<GunNode> gun; Clip gc; bool haveGun = false; std::string gunRoot;
     {
         Nested ns;
         if (ParseNested(clipFile, ns) && !ns.e.empty()) {
@@ -274,7 +276,10 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
                 std::map<uint32_t, std::string> known;
                 for (int i = 0; kGunBoneNames[i]; ++i) known[Crc32(kGunBoneNames[i], strlen(kGunBoneNames[i]))] = kGunBoneNames[i];
                 std::vector<Node> gn; std::string e3; std::map<uint32_t, int> gidx;
-                if (gunSkel && Skeleton(*gunSkel, gn, &e3)) for (size_t k = 0; k < gn.size(); ++k) { known[Crc32(gn[k].name.data(), gn[k].name.size())] = gn[k].name; gidx[Crc32(gn[k].name.data(), gn[k].name.size())] = (int)k; }
+                if (gunSkel && Skeleton(*gunSkel, gn, &e3)) for (size_t k = 0; k < gn.size(); ++k) {
+                    known[Crc32(gn[k].name.data(), gn[k].name.size())] = gn[k].name; gidx[Crc32(gn[k].name.data(), gn[k].name.size())] = (int)k;
+                    if (gn[k].parent < 0 && gunRoot.empty()) gunRoot = gn[k].name;
+                }
                 std::map<int, int> trackOfGunSkel;
                 for (int t = 0; t < gc.tracks; ++t) {
                     GunNode g; g.track = t; g.parent = -1 - hand;
@@ -314,7 +319,10 @@ bool ToGlb(const Bytes& clipFile, const Bytes& skel, Bytes& glb, std::string* re
     for (size_t k = 0; k < gun.size(); ++k) {
         const GunNode& g = gun[k];
         char b[512];
-        snprintf(b, sizeof(b), ",{\"name\":\"%s\",\"rotation\":[%.9g,%.9g,%.9g,%.9g],\"translation\":[%.9g,%.9g,%.9g],\"extras\":{\"fc4gun\":1}", g.name.c_str(), g.q.x, g.q.y, g.q.z, g.q.w, g.t.x, g.t.y, g.t.z);
+        // fc4gun_root: this bone hangs off the hand here; other copies of the gun's animation in the clip
+        // may hold it relative to the gun's root bone instead (FromGlb converts)
+        std::string rootX = g.parent < 0 && !gunRoot.empty() ? ",\"fc4gun_root\":\"" + gunRoot + "\"" : "";
+        snprintf(b, sizeof(b), ",{\"name\":\"%s\",\"rotation\":[%.9g,%.9g,%.9g,%.9g],\"translation\":[%.9g,%.9g,%.9g],\"extras\":{\"fc4gun\":1%s}", g.name.c_str(), g.q.x, g.q.y, g.q.z, g.q.w, g.t.x, g.t.y, g.t.z, rootX.c_str());
         nj += b;
         std::string ch; for (size_t j = 0; j < gun.size(); ++j) if (gun[j].parent == (int)k) ch += (ch.empty() ? "" : ",") + std::to_string(nodes.size() + 1 + j);
         if (!ch.empty()) nj += ",\"children\":[" + ch + "]";
@@ -462,7 +470,11 @@ bool GlbClipId(const Bytes& f, uint64_t* id) {
 
 
 // ------------------------------------------------------------------ .glb -> clip
-struct GlbAnim { std::map<std::string, std::pair<std::vector<float>, std::vector<Q>>> rot; std::map<std::string, std::pair<std::vector<float>, std::vector<V>>> pos; float dur = 0; };
+struct GlbAnim {
+    std::map<std::string, std::pair<std::vector<float>, std::vector<Q>>> rot; std::map<std::string, std::pair<std::vector<float>, std::vector<V>>> pos; float dur = 0;
+    std::set<std::string> add;      // bones marked extras.fc4_new_track: gun parts the clip didn't move, given a track of their own
+    std::map<std::string, std::string> root;   // extras.fc4gun_root: the bone is relative to the hand; that's the gun's root bone
+};
 
 static bool ReadGlbAnim(const Bytes& f, GlbAnim& a, std::string* err) {
     if (f.size() < 20 || memcmp(f.data(), "glTF", 4) != 0) { *err = "not a .glb file (export from Blender as glTF Binary)"; return false; }
@@ -490,6 +502,11 @@ static bool ReadGlbAnim(const Bytes& f, GlbAnim& a, std::string* err) {
         for (size_t k = 0; k < n; ++k) memcpy(&out[k * comps], &bin[off + k * st], 4 * comps);
         return true;
     };
+    for (auto& n : j["nodes"].a) {
+        if (n["name"].s.empty()) continue;
+        if (n["extras"].has("fc4_new_track")) a.add.insert(n["name"].s);
+        if (!n["extras"]["fc4gun_root"].s.empty()) a.root[n["name"].s] = n["extras"]["fc4gun_root"].s;
+    }
     const J& an = j["animations"][(size_t)0];
     for (auto& ch : an["channels"].a) {
         const J& s = an["samplers"][(size_t)ch["sampler"].i(0)];
@@ -581,7 +598,7 @@ template <class F> static Bytes AnimRegion(int keys, F block) {
 }
 
 bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& out, std::string* report, int bits = 16,
-             const std::map<uint32_t, std::string>* nameOverride = nullptr, bool nested = true, bool allowNone = false) {
+             const std::map<uint32_t, std::string>* nameOverride = nullptr, bool nested = true, bool allowNone = false, bool addTracks = true) {
     std::string& R = *report;
     if (tmpl.size() < C + 0x50 || memcmp(&tmpl[C], "aNi", 3) != 0) { R = "the clip to replace isn't an animation clip"; return false; }
     if (r16(tmpl, C + 4) & 0x4000) { R = "the clip to replace uses a header layout FC4Hook doesn't write yet"; return false; }
@@ -594,6 +611,20 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
         for (auto& n : nodes) nameOf[Crc32(n.name.data(), n.name.size())] = n.name;
     }
     GlbAnim ga; if (!ReadGlbAnim(glbFile, ga, &R)) return false;
+    int ntr0 = orig.tracks;
+    // a gun clip: parts the .glb marks as new get a track appended (e.g. a minigun's barrels on a node the
+    // original gun never animated). The game finds tracks by name hash, in any order.
+    bool gunEntry = false;
+    if (nameOverride) for (auto h : orig.hashes) { auto it = nameOverride->find(h); if (it != nameOverride->end() && (ga.rot.count(it->second) || ga.pos.count(it->second))) gunEntry = true; }
+    if (nameOverride && !nested && addTracks && gunEntry) {
+        for (auto& nm : ga.add) {
+            uint32_t h = Crc32(nm.data(), nm.size());
+            if (std::find(orig.hashes.begin(), orig.hashes.end(), h) != orig.hashes.end() || (!ga.rot.count(nm) && !ga.pos.count(nm))) continue;
+            orig.hashes.push_back(h); orig.flags.push_back(ga.pos.count(nm) ? 0xc0 : 0); orig.rot.emplace_back(); orig.pos.emplace_back();
+            nameOf[h] = nm; ++orig.tracks;
+        }
+        if (orig.tracks > 0xfff) { R = "too many tracks"; return false; }
+    }
     int ntr = orig.tracks;
     float fps = orig.length > 0 && orig.frames > 0 ? orig.frames / orig.length : 30.f;
     // a tagged .glb (FC4_<id>) has one key per Blender frame at 24 fps: game key k = Blender frame k
@@ -612,6 +643,24 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
         if (orig.flags[t] & 0xc0) {
             if (ip != ga.pos.end()) for (int k = 0; k < keys; ++k) pos[t].push_back(SampleV(ip->second, k / gfps));
             else if (!orig.pos[t].empty()) for (int k = 0; k < keys; ++k) pos[t].push_back(orig.pos[t][orig.pos[t].size() == 1 ? 0 : std::min(k, (int)orig.pos[t].size() - 1)]);
+        }
+    }
+    // a copy of the gun's animation that holds the gun's root bone as a track of its own: the .glb's
+    // bones that hang off the hand are relative to that root here
+    if (nameOverride && !nested) {
+        for (int t = 0; t < ntr; ++t) {
+            auto nm = nameOf.find(orig.hashes[t]); if (nm == nameOf.end()) continue;
+            auto rt = ga.root.find(nm->second); if (rt == ga.root.end()) continue;
+            uint32_t rh = Crc32(rt->second.data(), rt->second.size());
+            int ri = -1; for (int u = 0; u < ntr; ++u) if (orig.hashes[u] == rh && u != t) ri = u;
+            if (ri < 0 || (!ga.rot.count(nm->second) && !ga.pos.count(nm->second))) continue;
+            for (int k = 0; k < keys; ++k) {
+                Q R = rot[ri].empty() ? Q{ 0, 0, 0, 1 } : rot[ri][std::min(k, (int)rot[ri].size() - 1)];
+                V P = pos[ri].empty() ? V{ 0, 0, 0 } : pos[ri][std::min(k, (int)pos[ri].size() - 1)];
+                Q iR = { -R.x, -R.y, -R.z, R.w };
+                if (k < (int)rot[t].size() && ga.rot.count(nm->second)) rot[t][k] = qmul(iR, rot[t][k]);
+                if (k < (int)pos[t].size() && ga.pos.count(nm->second)) pos[t][k] = qrotv(iR, { pos[t][k].x - P.x, pos[t][k].y - P.y, pos[t][k].z - P.z });
+            }
         }
     }
     // additive layer (identity constant rotations): the .glb shows it on top of the rest pose (see ToGlb); take that back off
@@ -684,7 +733,12 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
         else { while ((body.size() - o) % 16) body.push_back(0); }
         size_t start = body.size();
         if (rebuilt) { const Bytes& r = reg[F[f][0]]; body.insert(body.end(), r.begin(), r.end()); produced[F[f][0]] = true; }
-        else if (f == 100) { body.insert(body.end(), flags.begin(), flags.end()); body.insert(body.end(), tmpl.begin() + C + o + ntr, tmpl.begin() + C + end); }
+        else if (f == 100) { body.insert(body.end(), flags.begin(), flags.end()); if (o + ntr0 < end) body.insert(body.end(), tmpl.begin() + C + o + ntr0, tmpl.begin() + C + end); }
+        else if (f == 101 && ntr > ntr0) {
+            body.insert(body.end(), tmpl.begin() + C + o, tmpl.begin() + C + o + 4 * ntr0);
+            for (int t = ntr0; t < ntr; ++t) put32(body, orig.hashes[t]);
+            if (o + 4 * ntr < end) body.insert(body.end(), tmpl.begin() + C + o + 4 * ntr, tmpl.begin() + C + end);
+        }
         else if (f < 10 && (F[f][0] == 0x28 || F[f][0] == 0x2a || F[f][0] == 0x2e || F[f][0] == 0x30 || F[f][0] == 0x32)) { /* ours, now empty */ start = 0; }
         else body.insert(body.end(), tmpl.begin() + C + o, tmpl.begin() + C + end);
         newOff[f] = start;
@@ -703,6 +757,7 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
     }
     auto w16 = [&](size_t o, uint16_t v) { memcpy(&body[o], &v, 2); };
     w16(6, (uint16_t)frames); memcpy(&body[8], &length, 4);
+    w16(4, (uint16_t)((r16(tmpl, C + 4) & ~0xfff) | ntr));
     w16(0x18, (uint16_t)crot.size()); w16(0x1a, (uint16_t)cpos.size()); w16(0x1c, (uint16_t)arot.size()); w16(0x1e, (uint16_t)apos.size());
     w16(0x20, (uint16_t)(scales.size() + (extra && oldSc ? 1 : 0)));
     out.assign(tmpl.begin(), tmpl.begin() + C); out.insert(out.end(), body.begin(), body.end());
@@ -712,6 +767,7 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
     char b[240];
     snprintf(b, sizeof(b), "%d frames (%.2f s), %d bones from the .glb, %zu animated rotations, %zu animated positions", frames, length, fromGlb, arot.size(), apos.size());
     R = b;
+    if (ntr > ntr0) R += ", " + std::to_string(ntr - ntr0) + " new";
     if (nested) {
         // the gun's own animation: if the .glb animates the gun's bones (exported with the clip as
         // CLIP, SLIDE... / gun_<hash>), rewrite nested clip 0 from them; the section is rebuilt and
@@ -742,7 +798,8 @@ bool FromGlb(const Bytes& tmpl, const Bytes& glbFile, const Bytes& skel, Bytes& 
             }
             if (okAll) {
                 Clip chk2; std::string e3; Nested ns2; bool good = Decode(n2, chk2, &e3) && ParseNested(n2, ns2);
-                { Clip g; good = good && !ns2.e.empty() && Decode(NestedAsFile(n2, ns2.e[0]), g, &e3) && g.frames == frames; }
+                // (a gun clip may count its frames differently from the clip it's in, e.g. 2 in a 1-frame pose)
+                { Clip g; good = good && !ns2.e.empty() && Decode(NestedAsFile(n2, ns2.e[0]), g, &e3) && fabsf(g.length - length) < 0.05f; }
                 if (good) { out.swap(n2); R += "; gun parts: " + nr0; }
                 else R += "; (gun parts not written: " + e3 + ")";
             }

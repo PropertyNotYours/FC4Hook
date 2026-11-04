@@ -2351,11 +2351,17 @@ static std::string FriendlyClip(uint64_t id) {
 }
 
 static bool byNameUi = true;
+static bool ReadFileW(const std::wstring& p, std::vector<uint8_t>& d) {
+    FILE* f = _wfopen(p.c_str(), L"rb"); if (!f) return false;
+    uint8_t b[65536]; size_t n; d.clear();
+    while ((n = fread(b, 1, sizeof(b), f)) > 0) d.insert(d.end(), b, b + n);
+    fclose(f); return true;
+}
 static void WsAnimations(const WorkshopWeapon& w) {
     ImGui::TextWrapped("Custom first-person animations. 1) Tick Watch and press Clear. 2) Close the menu, hold this weapon and do "
                        "what you want to change (draw, idle, fire, reload, sprint). 3) Come back: the clips the game played are listed, "
                        "newest first. Export one to Blender (.glb), edit it, export it as glTF Binary and give it here. Note: a clip "
-                       "belongs to an animation set shared by weapons; with Only for this weapon your version plays just for this one.");
+                       "belongs to an animation set shared by weapons; a replaced clip plays for every weapon that uses it.");
     if (!ClipMonitorAvailable()) { ImGui::TextDisabled("Unavailable: the game's clip-start function wasn't found."); return; }
     bool cm = ClipMonitorEnabled();
     if (ImGui::Checkbox("Watch##wsa", &cm)) ClipMonitorSetEnabled(cm);
@@ -2413,20 +2419,10 @@ static void WsAnimations(const WorkshopWeapon& w) {
         ImGui::TextDisabled("A clip runs a little longer than its stat (the arms settle back at the end).");
     }
     static std::map<uint64_t, std::string> glbIn;
-    static bool onlyThis = false;          // per-weapon clips don't load yet (1.12.x): default to replacing for everyone
-    ImGui::Checkbox("Only for this weapon", &onlyThis);
-    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: your clip plays only while you hold this weapon; the weapon it borrows its\n"
-                                                  "animation set from keeps the game's clip. Off: replaces the clip for every weapon\n"
-                                                  "that uses it (the old way).");
-    // per weapon: files\fc4hook\clips\<item>_<clip>.ani (FC4Hook swaps it in while you hold this weapon)
-    // for everyone: files\__unknown\<clip>.ani (replaces the game's clip)
-    std::wstring modFiles = g_rootDir + L"mods\\" + Widen(w.mod) + (onlyThis ? L"\\files\\fc4hook\\clips\\" + Widen(std::to_string(w.ids[0])) + L"_"
-                                                                            : std::wstring(L"\\files\\__unknown\\"));
+    // a replaced clip goes in the mod as files\__unknown\<clip id>.ani and plays for every weapon that uses it
+    std::wstring modFiles = g_rootDir + L"mods\\" + Widen(w.mod) + L"\\files\\__unknown\\";
     for (size_t k = 0; k < modFiles.size(); ++k) if (modFiles[k] == L'\\' && k > 2) CreateDirectoryW(modFiles.substr(0, k).c_str(), nullptr);
-    ImGui::TextDisabled("Holding: %s", GetState("weapon.probe", "?").c_str());
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Load my custom clips with this weapon")) { std::string m; WorkshopSyncClipDeps(w, &m); std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m; }
+
     auto resolve = [&](std::string p) {
         while (!p.empty() && (p.back() == '"' || p.back() == ' ')) p.pop_back(); while (!p.empty() && (p[0] == '"' || p[0] == ' ')) p.erase(0, 1);
         if (p.find(':') == std::string::npos) return g_rootDir + L"dumps\\animations\\" + Widen(p);
@@ -2440,9 +2436,13 @@ static void WsAnimations(const WorkshopWeapon& w) {
         ImGui::BeginDisabled(!any[0]);
         if (ImGui::Button("Use my .glb (finds its clip)")) {
             std::wstring src = resolve(any); uint64_t cid = ClipIdOfGlb(src); std::string m;
-            if (!cid) m = "This .glb doesn't say which clip it came from (exported before FC4Hook 1.8.2?). Export the clip again from the list below, or use the box on its row.";
-            else { char ib[24]; snprintf(ib, sizeof(ib), "%016llx", (unsigned long long)cid); ClipFromGlb(cid, src, modFiles + Widen(ib) + L".ani", &m); m = std::string("Clip ") + ib + ": " + m;
-                   if (onlyThis) { std::string dm; WorkshopSyncClipDeps(w, &dm); m += "\n" + dm; } }
+            if (!cid) {
+                std::vector<uint8_t> gd; bool anim = false;
+                if (ReadFileW(src, gd)) { std::string head(gd.begin(), gd.begin() + std::min<size_t>(gd.size(), 1 << 20)); anim = head.find("\"animations\"") != std::string::npos; }
+                m = anim ? "This .glb doesn't say which clip it came from (exported before FC4Hook 1.8.2?). Export the clip again from the list below, or use the box on its row."
+                         : "This .glb has no animation in it: it looks like a model. Put models in the Model tab (Use my .glb / .obj).";
+            }
+            else { char ib[24]; snprintf(ib, sizeof(ib), "%016llx", (unsigned long long)cid); ClipFromGlb(cid, src, modFiles + Widen(ib) + L".ani", &m); m = std::string("Clip ") + ib + ": " + m; }
             std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
         }
         ImGui::EndDisabled();
@@ -2461,7 +2461,7 @@ static void WsAnimations(const WorkshopWeapon& w) {
         std::string gs = L > 0 ? guess(L) : "";
         if (!gs.empty()) { ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1), "%s", gs.c_str()); ImGui::SameLine(); }
         std::string lab = ClipLabelFor(id);
-        ImGui::TextDisabled("%s%s", lab.c_str(), replaced ? (onlyThis ? "  [custom for this weapon]" : "  [replaced for every weapon]") : "");
+        ImGui::TextDisabled("%s%s", lab.c_str(), replaced ? "  [replaced for every weapon]" : "");
         if (ImGui::SmallButton("Export .glb")) { std::string m; ClipExportGlb(id, nullptr, &m); std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m; }
         ImGui::SameLine();
         std::string& g = glbIn[id];
@@ -2473,7 +2473,6 @@ static void WsAnimations(const WorkshopWeapon& w) {
         if (ImGui::SmallButton("Use my .glb")) {
             std::wstring src = resolve(g);
             std::string m; ClipFromGlb(id, src, repl, &m);
-            if (onlyThis) { std::string dm; WorkshopSyncClipDeps(w, &dm); m += "\n" + dm; }
             std::lock_guard<std::mutex> lk(s_wsMx); s_wsMsg = m;
         }
         ImGui::EndDisabled();
@@ -2489,6 +2488,29 @@ static void WsAnimations(const WorkshopWeapon& w) {
 struct WsFit { float scale = 1.f; float move[3] = { 0, 0, 0 }; };
 static std::map<uint32_t, WsFit> s_wsFit;
 
+// which .xbg in the mod's files\ folder has this game path hash ("" if none)
+static std::string ModModelForHash(const std::string& mod, uint64_t h) {
+    static std::map<std::string, std::pair<uint64_t, std::string>> cache;   // per mod: last hash looked up
+    char kb[24]; snprintf(kb, sizeof(kb), "%016llx", (unsigned long long)h);
+    auto it = cache.find(mod + kb);
+    if (it != cache.end() && GetTickCount64() - it->second.first < 5000) return it->second.second;
+    std::wstring root = g_rootDir + L"mods\\" + Widen(mod) + L"\\files\\";
+    std::string found;
+    std::function<void(const std::wstring&, const std::string&)> walk = [&](const std::wstring& dir, const std::string& rel) {
+        WIN32_FIND_DATAW fd; HANDLE hf = FindFirstFileW((dir + L"*").c_str(), &fd);
+        if (hf == INVALID_HANDLE_VALUE) return;
+        do {
+            std::wstring n = fd.cFileName; if (n == L"." || n == L"..") continue;
+            std::string r = rel + Narrow(n);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) walk(dir + n + L"\\", r + "\\");
+            else if (r.size() > 4 && _stricmp(r.c_str() + r.size() - 4, ".xbg") == 0 && FileId(r.c_str()) == h) found = r;
+        } while (found.empty() && FindNextFileW(hf, &fd));
+        FindClose(hf);
+    };
+    walk(root, "");
+    cache[mod + kb] = { GetTickCount64(), found };
+    return found;
+}
 static void WsModel(const WorkshopWeapon& w) {
     {
     WsPart& p0 = WsGet(w, 0);
@@ -2509,6 +2531,14 @@ static void WsModel(const WorkshopWeapon& w) {
         ++n;
         // the readable path is stored just before the hash
         std::string text = i > 0 ? FcbFormat(p.d, p.v[i - 1]) : "";
+        {   // the readable path is only rewritten when the new one fits: trust the hash the game uses
+            uint64_t h = 0; if (v.offset + 8 <= p.d.size()) memcpy(&h, &p.d[v.offset], 8);
+            std::string t = text; if (t.size() > 2 && t[0] == '"') t = t.substr(1, t.size() - 2);
+            if (h && FileId(t.c_str()) != h) {
+                std::string mine = ModModelForHash(w.mod, h);
+                text = "\"" + (mine.empty() ? std::string("a model FC4Hook made (path not stored)") : mine) + "\"";
+            }
+        }
         ImGui::PushID((int)v.offset + part * 1000000);
         uint32_t key = v.offset + (uint32_t)part * 1000000u;
         ImGui::SeparatorText(v.object.substr(v.object.rfind('/') + 1).c_str());
@@ -2746,7 +2776,7 @@ static void WsArms(const WorkshopWeapon& w) {
     ImGui::BeginDisabled(pick < 0);
     if (ImGui::Button("Use these animations")) {
         uint64_t donor = strtoull(s_weapons[pick].id.c_str(), nullptr, 10);
-        if (WorkshopSetAnimSet(w, donor, &s_msg)) { std::string dm; WorkshopSyncClipDeps(w, &dm); }
+        WorkshopSetAnimSet(w, donor, &s_msg);
         s_cur = WorkshopAnimSet(w);
         s_wsListed = false;                              // re-read workshop.txt (bones=)
     }
@@ -2826,12 +2856,6 @@ static void TabWorkshop() {
 }
 
 // ------------------------------------------------------------- menu ------
-static bool BeginTab(const char* name) {
-    ImGuiTabItemFlags fl = 0;
-    if (s_selectTab && strcmp(s_selectTab, name) == 0) { fl = ImGuiTabItemFlags_SetSelected; s_selectTab = nullptr; }
-    return ImGui::BeginTabItem(name, nullptr, fl);
-}
-
 static void DrawMenu() {
     ImGui::GetStyle().FontScaleMain = g_cfg.uiScale;
     ImGui::SetNextWindowSize(ImVec2(760, 600), ImGuiCond_FirstUseEver);

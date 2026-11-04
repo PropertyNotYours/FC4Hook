@@ -25,8 +25,6 @@ function A.spawn(job)
   local ok, w = pcall(CAPI_Pawn.SpawnWeapon, me, job.id)
   if not ok or w == nil or tostring(w) == A.INVALID or w == 0 then return false end
   local ok2, err = pcall(CAPI_Pawn.AddWeapon, me, w, true)
-  A.given = A.given or {}
-  A.given[tostring(w)] = tostring(job.id)          -- weapon entity -> item id (per-weapon animations)
   if ok2 then
     A.status(job, "ok")
     ModLog("Armory: gave you " .. job.name)

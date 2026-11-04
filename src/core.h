@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.12.6"
+#define FC4HOOK_VERSION      "1.13.6"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -119,7 +119,6 @@ struct WorkshopWeapon { std::string mod, name; uint64_t base = 0; uint64_t ids[3
 bool WeaponChainOf(uint64_t item, WeaponChain* c);
 std::string WorkshopAnimSet(const WorkshopWeapon& w);
 bool WorkshopSetAnimSet(const WorkshopWeapon& w, uint64_t donorItem, std::string* msg);
-bool WorkshopSyncClipDeps(const WorkshopWeapon& w, std::string* msg);
 void WorkshopInstallGuard();
 std::string WorkshopIdList();
 int WorkshopRegister();                  // add Workshop weapons to the game's weapon -> properties map

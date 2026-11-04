@@ -50,12 +50,6 @@ std::vector<Lua54Button> Lua54Buttons() { std::lock_guard<std::mutex> lk(s_jobMx
 void Lua54PressButton(int id) { std::lock_guard<std::mutex> lk(s_jobMx); s_pressed.push_back(id); }
 
 // ------------------------------------------------------------ helpers ----
-static std::string Where(lua_State* L) {
-    luaL_where(L, 1);
-    std::string w = lua_tostring(L, -1); lua_pop(L, 1);
-    return w;
-}
-
 static std::string ArgsToString(lua_State* L, int from) {
     std::string s;
     int n = lua_gettop(L);

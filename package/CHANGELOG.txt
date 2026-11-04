@@ -1,6 +1,65 @@
 FC4Hook changelog
 =================
 
+1.13.6
+  - Model import on skinned base weapons: an object named like one of the base model's skinned nodes
+    (PKM_AmmoLid, PKM_AmmoBox, PKM_Tripod2...) rides that node, so the game's animations move it. Points that
+    move a skinned node also move its bind pose, so the geometry on it stays where it was modelled.
+  - Animation import: a gun bone marked extras.fc4_new_track gets a track of its own in the clip even when
+    the original gun never moved it (e.g. a minigun's barrels).
+  - Animation import: clips that hold the gun's animation twice (the PKM's: once on the hand, once with the
+    gun's root bone) now get the right values in the second copy too; before, it got the hand-relative ones.
+    Gun parts are now also written for 1-frame poses (they were skipped).
+  - tools\blood_dragon: fc3xbg2glb.py --map (split a model by bone onto the base weapon's nodes) and --point;
+    overkill_clips.py + clipdump: the Overkill's spinning barrels, feed flap and ammo chain.
+
+1.13.5
+  - Model import: empties in the .glb named like the base model's nodes (IK_LeftHand, FX_FIRE, FX_CASING,
+    ...) move those nodes, so the left hand's IK grip, the muzzle flash and the shell ejection match the
+    new gun. fc3xbg2glb.py exports Far Cry 3 / Blood Dragon weapons' points this way.
+
+1.13.4
+  - Model import on skinned base weapons (PKM): parts of the new model were glued to bones the base
+    weapon animates (the PKM's feed cover, ammo box and a belt bullet), so they flew off on reload. The
+    bone palette holds node numbers: every filled piece now points its first slot at the part's own node
+    (PKM_Frame) and all its vertices use it.
+
+1.13.3
+  - Workshop > Model: "now:" shows the model the weapon really uses. The readable path in the file is only
+    rewritten when the new one fits, so a longer path kept showing the base weapon's model.
+  - Model import: texture coordinates outside the base model's range (Far Cry 3 models repeat textures)
+    widen it instead of being clamped.
+
+1.13.2
+  - Model import: a material marked extras.dunia_mask (fc3xbg2glb.py does this) uses its metal/roughness
+    texture as the game's own shine/occlusion/gloss mask, unchanged. Blood Dragon weapons now keep their
+    shiny metal instead of looking matte black.
+  - tools\blood_dragon\fc3xbg2glb.py: carries the _m mask, and turns Dunia normal maps (X in alpha) into
+    ordinary RGB ones.
+
+1.13.1
+  - Model import: a new model bigger than the base weapon's position range (e.g. a 1.2 m minigun on the
+    PKM, which holds +-1 m) no longer fails: the range is widened to fit.
+
+1.13.0
+  - Model import: base weapons whose model is skinned to several bones (vertex layouts 0xDA / 0xBDA,
+    e.g. the PKM) now work. New geometry is put whole on each part's own bone.
+  - Animations tab: giving it a model .glb now says to use the Model tab.
+  - tools\blood_dragon: dunia_extract (unpack Far Cry 3 / Blood Dragon / Far Cry 4 archives),
+    dunia_find, and fc3xbg2glb.py (Far Cry 3 / Blood Dragon .xbg -> .glb with textures, one object per
+    part, ready for Workshop > Model).
+
+1.12.7
+  - Removed per-weapon clips ("Only for this weapon"): the game never loaded them. A replaced clip now
+    always goes in the mod's files\__unknown and plays for every weapon that uses it. Gone with it: the
+    clip-start swap, the weapon dependency-list edit, the "Holding" probe (and the Lua that worked out
+    the held weapon four times a second), and the Armory's give log.
+  - Removed the [Debug] PackageSwap option (an experiment that broke the move data).
+  - Small dead-code cleanup.
+  - tools\cod_retarget: retarget2.py (gun-driven: hands follow the gun, arms solved back to the
+    shoulders). Fixed reading CoD tracks stored as offsets from the bind pose (the Ray Gun's batteries
+    were placed at the gun's origin), and the off-by-one finger mapping.
+
 1.12.6
   - Animations tab: "Only for this weapon" now starts unticked. Per-weapon clips don't load in game yet,
     so a clip saved that way silently did nothing.

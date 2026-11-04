@@ -464,56 +464,6 @@ std::string WorkshopAnimSet(const WorkshopWeapon& w) {
     return a.ok ? AnimSetText(a) : "?";
 }
 
-// Per-weapon clips (files\fc4hook\clips\<item>_<clip>.ani) are new resources nothing in the game
-// asks for, so they never load. List them in the weapon's own dependency list (the last object,
-// d9c50d17: children 0ad3ab2c {9c5891a6 = crc32(class), 6f0ac77a = u32 n + n ids}, 44186b66 =
-// total id count) as CAnimationResource (b0604725): the game then loads them with the weapon.
-bool WorkshopSyncClipDeps(const WorkshopWeapon& w, std::string* msg) {
-    std::vector<uint64_t> ids;
-    std::wstring dir = ModDir(w.mod) + L"files\\fc4hook\\clips\\";
-    std::string pre = std::to_string(w.ids[0]) + "_";
-    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((dir + L"*.ani").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            std::string n = Narrow(fd.cFileName); for (auto& c : n) c = (char)tolower((unsigned char)c);
-            if (n.compare(0, pre.size(), pre) == 0) ids.push_back(FileId(("fc4hook\\clips\\" + n).c_str()));
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
-    std::wstring path = ArkFile(w.mod, w.ids[0]);
-    std::vector<uint8_t> d;
-    if (!ReadDisk(path, d)) { *msg = "Couldn't read " + Narrow(path); return false; }
-    fcbt::Obj root; if (!fcbt::Parse(d, root)) { *msg = "This weapon's file has an unknown layout."; return false; }
-    if (root.kids.empty() || root.kids.back().ref || root.kids.back().hash != 0xd9c50d17u) { *msg = "No dependency list at the end of this weapon's file."; return false; }
-    fcbt::Obj& dl = root.kids.back();
-    for (auto& k : dl.kids) if (k.ref) { *msg = "Dependency list has references; left alone."; return false; }
-    const uint32_t kAnim = 0xb0604725u;
-    uint32_t removed = 0;
-    for (size_t i = 0; i < dl.kids.size();) {
-        auto& k = dl.kids[i];
-        uint32_t t = 0;
-        if (k.hash == 0x0ad3ab2cu && k.vals.size() >= 2 && k.vals[0].data.size() == 4) memcpy(&t, k.vals[0].data.data(), 4);
-        if (t == kAnim) { if (k.vals[1].data.size() >= 4) { uint32_t n; memcpy(&n, k.vals[1].data.data(), 4); removed += n; } dl.kids.erase(dl.kids.begin() + i); }
-        else ++i;
-    }
-    if (!ids.empty()) {
-        fcbt::Obj e; e.hash = 0x0ad3ab2cu;
-        fcbt::Val a; a.hash = 0x9c5891a6u; a.data.resize(4); memcpy(a.data.data(), &kAnim, 4);
-        fcbt::Val b; b.hash = 0x6f0ac77au; uint32_t n = (uint32_t)ids.size();
-        b.data.resize(4 + 8 * ids.size()); memcpy(b.data.data(), &n, 4); memcpy(b.data.data() + 4, ids.data(), 8 * ids.size());
-        e.vals.push_back(a); e.vals.push_back(b); dl.kids.push_back(e);
-    }
-    if (fcbt::Val* c = fcbt::Field(dl, 0x44186b66u)) if (c->data.size() == 4) {
-        uint32_t t; memcpy(&t, c->data.data(), 4); t = t - removed + (uint32_t)ids.size(); memcpy(c->data.data(), &t, 4);
-    }
-    std::vector<uint8_t> out;
-    if (!fcbt::Serialize(d, root, out)) { *msg = "Couldn't rebuild the file."; return false; }
-    fcbt::Obj check; if (!fcbt::Parse(out, check)) { *msg = "Rebuilt file didn't check out; nothing written."; return false; }
-    if (out != d && !WriteDisk(path, out.data(), out.size())) { *msg = "Couldn't write " + Narrow(path); return false; }
-    *msg = std::to_string(ids.size()) + " custom clip(s) now load with this weapon (restart the game, or reload mods)";
-    return true;
-}
-
 // Give the weapon the first-person animation set of another weapon (its type number, package and
 // gun skeleton). The donor is read from the game (or a mod).
 bool WorkshopSetAnimSet(const WorkshopWeapon& w, uint64_t donorItem, std::string* msg) {

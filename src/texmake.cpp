@@ -162,7 +162,7 @@ bool AtlasXbtSplit(const std::vector<Bytes>& imgs, const std::string& mip0Path, 
 // (more than one = a 2x2 atlas, same layout as AtlasXbtSplit). For each cell:
 //   normal:   its own normal map, or one derived from the colour image (bright = raised)
 //   specular: from its metal/roughness map (G = roughness, B = metal), or its roughness/metallic values
-struct TexSrc { Bytes colour, normal, mr; float rough = 0.5f, metal = 0.f; };
+struct TexSrc { Bytes colour, normal, mr; float rough = 0.5f, metal = 0.f; bool gameMask = false; };
 bool TextureSetXbt(const std::vector<TexSrc>& src, const std::string pathD, const std::string pathN, const std::string pathS,
                    Bytes out[3][2], std::string* err) {
     size_t nc = std::min<size_t>(src.size(), 4);
@@ -204,6 +204,9 @@ bool TextureSetXbt(const std::vector<TexSrc>& src, const std::string pathD, cons
             // G = ambient occlusion (white = open, dark = crevice), B = gloss. A plain grey here made the
             // whole gun "in shadow" (black).
             uint8_t* sp = &P[((size_t)(oy + y) * S + ox + x) * 4];
+            if (src[k].gameMask && !mr[k].empty()) {             // already the game's mask: copy it
+                const uint8_t* q = sample(mr[k], mw[k], mh[k], x, y); sp[0] = q[0]; sp[1] = q[1]; sp[2] = q[2]; continue;
+            }
             float rough = std::min(1.f, std::max(0.f, src[k].rough)), metal = std::min(1.f, std::max(0.f, src[k].metal));
             if (!mr[k].empty()) { const uint8_t* q = sample(mr[k], mw[k], mh[k], x, y); rough = q[1] / 255.f; metal = q[2] / 255.f; }
             float lumv = col[k].empty() ? 0.5f : lum[(size_t)y * cell + x];

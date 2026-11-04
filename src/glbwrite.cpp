@@ -44,7 +44,7 @@ bool ImageToXbt(const Bytes& img, char kind, Bytes& out, std::string* err);
 bool ImageToXbtSplit(const Bytes& img, char kind, const std::string& mip0Path, Bytes& mainOut, Bytes& mip0Out, std::string* err);
 std::string Mip0Name(const std::string& xbt);
 bool AtlasXbtSplit(const std::vector<Bytes>& imgs, const std::string& mip0Path, Bytes& mainOut, Bytes& mip0Out, std::string* err);
-struct TexSrc { Bytes colour, normal, mr; float rough = 0.5f, metal = 0.f; };
+struct TexSrc { Bytes colour, normal, mr; float rough = 0.5f, metal = 0.f; bool gameMask = false; };
 bool TextureSetXbt(const std::vector<TexSrc>& src, const std::string pathD, const std::string pathN, const std::string pathS, Bytes out[3][2], std::string* err);
 void FlatXbt(char kind, uint8_t level, Bytes& out);
 bool MaterialWithTextures(const Bytes& mat, const std::vector<std::pair<std::string, std::string>>& swaps, Bytes& out, std::string* err);
@@ -249,6 +249,14 @@ struct Lod { float dist = 0; std::vector<Fmt> fmts; std::vector<Rec> recs; std::
 //  * a LODS submesh = (format, part, entry in part, firstIndex, lastVertex, vertexByteOffset, 0)
 //  * parts are moved by the animations (FRAME = the gun, CLIP = magazine, SLIDE...). New geometry goes
 //    to each LOD's FRAME part; the other parts are emptied.
+// vertex layouts FC4Hook writes: plain (0xCA 20 B, 0xBCA 32 B) and skinned (0x10 set: 0xDA 28 B, 0xBDA 40 B)
+static bool VtxKnown(uint32_t f, uint32_t stride) { return (f == 0xCA && stride == 20) || (f == 0xBCA && stride == 32) || (f == 0xDA && stride == 28) || (f == 0xBDA && stride == 40); }
+static bool VtxTangents(uint32_t f) { return (f & 0xF00) == 0xB00; }
+// A skinned vertex's bone index points into its piece's bone palette: 48 u16 NODE numbers at entry +14
+// (0xffff = unused). FC4Hook puts every vertex of a piece it fills on slot 0 and sets slot 0 to the
+// part's own node (the PKM's main piece lists PKM_Frame first, but others start with the feed cover,
+// the ammo box or a belt bullet, which the reload moves).
+
 bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir, const std::string& stem,
                 const std::function<bool(const std::string&, Bytes&)>& readGame,
                 Bytes& out, std::vector<GlbFile>& files, std::string* report, const GlbOptions& opt) {
@@ -312,6 +320,8 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
         return V3{ v.x + 2 * (w * c1.x + c2.x), v.y + 2 * (w * c1.y + c2.y), v.z + 2 * (w * c1.z + c2.z) };
     };
     std::vector<Xf> partXf(ent.size());
+    std::vector<int> partNode(ent.size(), -1);           // the part's node (NODE index), for skinned palettes
+    std::vector<Xf> nodeWorld, nodeLocal; std::vector<std::string> nodeNames; std::vector<size_t> nodeOffs; std::vector<int> nodeParent;
     {
         const Chunk *node = nullptr, *skid = nullptr;
         for (auto& c : cs) { if (c.tag == "NODE") node = &c; else if (c.tag == "SKID") skid = &c; }
@@ -321,6 +331,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
             uint32_t n = rd32(tmpl, a); a += 4;
             std::vector<int> parent; std::vector<Xf> local;
             for (uint32_t k = 0; k < n && k < 512 && a + 72 <= e; ++k) {
+                nodeOffs.push_back(a);
                 parent.push_back((int32_t)rd32(tmpl, a + 12));
                 Xf x; for (int j = 0; j < 4; ++j) x.q[j] = rdf(tmpl, a + 16 + 4 * j);
                 x.t = { rdf(tmpl, a + 32), rdf(tmpl, a + 36), rdf(tmpl, a + 40) };
@@ -342,12 +353,13 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
                 w.q[3] = a1[3] * b1[3] - a1[0] * b1[0] - a1[1] * b1[1] - a1[2] * b1[2];
                 world[k] = w;
             }
+            nodeWorld = world; nodeLocal = local; nodeNames = nodeName; nodeParent = parent;
         }
         std::vector<int> boneNode;
         if (skid) { uint32_t n = rd32(tmpl, skid->off + 20); for (uint32_t k = 0; k < n && k < 512; ++k) boneNode.push_back(rd16(tmpl, skid->off + 24 + 12 * k + 6)); }
         for (size_t pidx = 0; pidx < ent.size(); ++pidx) {
             int nd = -1;
-            if (boneNode.size() == ent.size()) nd = boneNode[pidx];
+            if (boneNode.size() == ent.size() && boneNode[pidx] < nodeName.size()) nd = boneNode[pidx];
             else {                                            // by name: "CLIP_LOD0" -> node "CLIP"
                 std::string pn = partName[pidx].substr(0, partName[pidx].rfind("_LOD"));
                 for (size_t k = 0; k < nodeName.size(); ++k) {
@@ -356,7 +368,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
                     if (a2 == b2) { nd = (int)k; break; }
                 }
             }
-            if (nd >= 0 && nd < (int)world.size()) partXf[pidx] = world[nd];
+            if (nd >= 0 && nd < (int)world.size()) { partXf[pidx] = world[nd]; partNode[pidx] = nd; }
         }
     }
 
@@ -373,7 +385,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
         if (nf == 0 || nf > 8) { R = "unexpected vertex formats in the base model"; return false; }
         for (uint32_t f = 0; f < nf; ++f) {
             Fmt fm = { rd32(tmpl, q), rd32(tmpl, q + 4), rd32(tmpl, q + 8), rd32(tmpl, q + 12) }; q += 16;
-            if (!((fm.flags == 0xCA && fm.stride == 20) || (fm.flags == 0xBCA && fm.stride == 32))) { R = "the base model uses a vertex layout FC4Hook doesn't know yet"; return false; }
+            if (!VtxKnown(fm.flags, fm.stride)) { char b[120]; snprintf(b, sizeof(b), "the base model uses a vertex layout FC4Hook doesn't know yet (%x, %u bytes)", fm.flags, fm.stride); R = b; return false; }
             lo.fmts.push_back(fm);
         }
         uint32_t ns = rd32(tmpl, q); q += 4;
@@ -403,6 +415,45 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
     float sc = opt.scale > 0.001f ? opt.scale : 1.f;
     for (auto& P : prims) for (auto& v : P.pos) v = { v.x * sc + opt.move[0], v.y * sc + opt.move[1], v.z * sc + opt.move[2] };
 
+    // --- skinning: MB2O holds each skinned node's inverse bind matrix (row vectors: 3x3 = the node's world
+    // rotation R, last row = -R^T t). Which entry is which node isn't stored, so match them by value.
+    auto qmat = [](const float q[4], float R[3][3]) {
+        float x = q[0], y = q[1], z = q[2], w = q[3];
+        R[0][0] = 1 - 2 * (y * y + z * z); R[0][1] = 2 * (x * y - z * w); R[0][2] = 2 * (x * z + y * w);
+        R[1][0] = 2 * (x * y + z * w); R[1][1] = 1 - 2 * (x * x + z * z); R[1][2] = 2 * (y * z - x * w);
+        R[2][0] = 2 * (x * z - y * w); R[2][1] = 2 * (y * z + x * w); R[2][2] = 1 - 2 * (x * x + y * y);
+    };
+    auto invBind = [&](const Xf& W, float m[16]) {
+        float R[3][3]; qmat(W.q, R);
+        for (int r = 0; r < 3; ++r) { for (int c = 0; c < 3; ++c) m[r * 4 + c] = R[r][c]; m[r * 4 + 3] = 0; }
+        for (int c = 0; c < 3; ++c) m[12 + c] = -(R[0][c] * W.t.x + R[1][c] * W.t.y + R[2][c] * W.t.z);
+        m[15] = 1;
+    };
+    std::vector<int> nodeMb(nodeWorld.size(), -1);           // node -> MB2O entry
+    const Chunk* mb2o = nullptr;
+    for (auto& c : cs) if (c.tag == "O2BM") mb2o = &c;
+    if (mb2o && mb2o->dataSize >= 4) {
+        uint32_t n = rd32(tmpl, mb2o->off + 20);
+        for (size_t k = 0; k < nodeWorld.size(); ++k) {
+            float m[16]; invBind(nodeWorld[k], m); int hit = -1, hits = 0;
+            for (uint32_t e = 0; e < n && mb2o->off + 24 + 64 * (e + 1) <= mb2o->off + mb2o->size; ++e) {
+                float d = 0; for (int i = 0; i < 16; ++i) d = std::max(d, fabsf(rdf(tmpl, mb2o->off + 24 + 64 * e + 4 * i) - m[i]));
+                if (d < 2e-3f) { hit = (int)e; ++hits; }
+            }
+            if (hits == 1) nodeMb[k] = hit;
+        }
+    }
+    // an object named like one of the base model's skinned nodes (PKM_AmmoLid, Handle...) rides that node, so
+    // the game's animations move it (skinned pieces only: the vertex's bone slot points at the node)
+    std::vector<int> primNode(prims.size(), -1);
+    for (size_t pi = 0; pi < prims.size(); ++pi) {
+        std::string n; for (char c : prims[pi].name) { if (c == '.') break; n += (char)toupper((unsigned char)c); }
+        for (size_t k = 0; k < nodeNames.size(); ++k) {
+            std::string nn = nodeNames[k]; for (auto& c : nn) c = (char)toupper((unsigned char)c);
+            if (nn == n && nodeMb[k] >= 0) primNode[pi] = (int)k;
+        }
+    }
+
     // --- parts the .glb fills. A Blender object named like a part of the base weapon (CLIP, SLIDE,
     // HAMMER..., or MAG/MAGAZINE/BATTERY for the CLIP) goes on that part, so the animations move it
     // (the clip comes out on reload); everything else goes on FRAME.
@@ -415,7 +466,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
         int fp = partIn("FRAME", l);
         if (fp >= 0) return fp;
         Lod& lo = lodv[l]; int best = -1;                     // unnamed: the part of the biggest piece
-        for (size_t k = 0; k < lo.recs.size(); ++k) if (lo.fmts[lo.recs[k].fmt].stride == 32 && (best < 0 || lo.idxCount[k] > lo.idxCount[best])) best = (int)k;
+        for (size_t k = 0; k < lo.recs.size(); ++k) if (VtxTangents(lo.fmts[lo.recs[k].fmt].flags) && (best < 0 || lo.idxCount[k] > lo.idxCount[best])) best = (int)k;
         return best < 0 ? -1 : (int)lo.recs[best].part;
     };
     auto groupOf = [&](const std::string& node) {
@@ -445,7 +496,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
             Lod& lo = lodv[l];
             int part = G.name == "FRAME" ? frameIn(l) : partIn(G.name, l);
             if (part < 0) { if (G.name == "FRAME") { R = "the base model has no main mesh piece"; return false; } continue; }
-            for (size_t k = 0; k < lo.recs.size(); ++k) if ((int)lo.recs[k].part == part && lo.fmts[lo.recs[k].fmt].stride == 32) G.lodSlots[l].push_back((int)k);
+            for (size_t k = 0; k < lo.recs.size(); ++k) if ((int)lo.recs[k].part == part && VtxTangents(lo.fmts[lo.recs[k].fmt].flags)) G.lodSlots[l].push_back((int)k);
             if (G.lodSlots[l].empty()) { if (G.name == "FRAME") { R = "the base model's main part has no usable piece"; return false; } continue; }
             std::sort(G.lodSlots[l].begin(), G.lodSlots[l].end(), [&](int x, int y) { return lo.idxCount[x] > lo.idxCount[y]; });
             G.own[l] = true;
@@ -535,6 +586,9 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
             int ni = gmat["normalTexture"]["index"].i(), mi = pbr["metallicRoughnessTexture"]["index"].i();
             if (ni >= 0) g.image(ni, ts.normal);
             if (mi >= 0) g.image(mi, ts.mr);
+            // extras.dunia_mask: the metal/roughness texture is really a Dunia "_m"/"_s" mask (R shine, G
+            // occlusion, B gloss), e.g. from fc3xbg2glb.py: used as it is
+            ts.gameMask = mi >= 0 && gmat["extras"]["dunia_mask"].i(0) != 0;
             ts.rough = pbr.has("roughnessFactor") ? (float)pbr["roughnessFactor"].n : 1.f;
             ts.metal = pbr.has("metallicFactor") ? (float)pbr["metallicFactor"].n : 1.f;
             srcs.push_back(ts);
@@ -577,6 +631,24 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
         return m;
     };
     // --- geometry per LOD
+    // the base model's position range (PCMP, int16 * scale + offset) may be too small for the new model
+    // (a 1.2 m minigun on a PKM that holds +-1 m): every vertex is rewritten anyway, so widen it to fit
+    bool widened = false;
+    {
+        float need = 0;
+        for (size_t pi = 0; pi < prims.size(); ++pi) for (auto& v : prims[pi].pos)
+            need = std::max({ need, fabsf(v.x - pOff), fabsf(v.y - pOff), fabsf(v.z - pOff) });
+        need += 0.25f;                                     // room for bone-space offsets of the parts
+        if (need > 32767 * pScale * 0.98f) { pScale = need / (32767 * 0.98f); widened = true; }
+    }
+    // same for texture coordinates (UCMP): Far Cry 3 / Blood Dragon models repeat textures (u up to 2+)
+    bool uvWidened = false;
+    {
+        float need = 0;
+        for (auto& P : prims) for (float u : P.uv) need = std::max(need, fabsf(u - uOff));
+        need += 0.01f;
+        if (need > 32767 * uScale) { uScale = need / 32767; uvWidened = true; }
+    }
     auto Qp = [&](float v, bool* bad) { long q2 = lroundf((v - pOff) / pScale); if (q2 < -32768 || q2 > 32767) *bad = true; return (int16_t)std::max(-32768L, std::min(32767L, q2)); };
     auto Qu = [&](float v) { long q2 = lroundf((v - uOff) / uScale); return (int16_t)std::max(-32768L, std::min(32767L, q2)); };
     bool tooBig = false;
@@ -608,42 +680,54 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
             pT[pi][k] = T; pB[pi][k] = B;
         }
     }
-    struct LodOut { std::vector<Bytes> vbuf; std::vector<uint32_t> fcount; std::vector<std::vector<uint16_t>> sIdx; std::vector<uint32_t> sFirstV, sNumV; };
+    struct LodOut { std::vector<Bytes> vbuf; std::vector<uint32_t> fcount; std::vector<std::vector<uint16_t>> sIdx; std::vector<uint32_t> sFirstV, sNumV; std::vector<std::vector<uint16_t>> sPal; };
     std::vector<LodOut> lout(nLod);
     size_t totalTris = 0; uint32_t mainVerts = 0;
     for (uint32_t l = 0; l < nLod; ++l) {
         Lod& lo = lodv[l]; LodOut& o = lout[l];
         size_t nf = lo.fmts.size(), ns = lo.recs.size();
-        o.vbuf.resize(nf); o.fcount.assign(nf, 0); o.sIdx.resize(ns); o.sFirstV.resize(ns); o.sNumV.resize(ns);
+        o.vbuf.resize(nf); o.fcount.assign(nf, 0); o.sIdx.resize(ns); o.sFirstV.resize(ns); o.sNumV.resize(ns); o.sPal.resize(ns);
         auto slotOf = assignFor(l);                           // submesh -> (group, slot)s
         for (size_t s = 0; s < ns; ++s) {
             const Rec& r = lo.recs[s];
             Bytes& vb = o.vbuf[r.fmt];
             uint32_t first = o.fcount[r.fmt], stride = lo.fmts[r.fmt].stride;
             o.sFirstV[s] = first;
+            uint32_t vflags = lo.fmts[r.fmt].flags;
+            bool skinned = (vflags & 0x10) != 0, tangents = VtxTangents(vflags);
+            uint8_t slot = 0;                                     // skinned: the vertex's palette slot (SKND below: 0 = the part's node)
+            std::vector<uint16_t>& pal = o.sPal[s];
+            if (skinned && partNode[r.part] >= 0) pal.push_back((uint16_t)partNode[r.part]);
             auto put = [&](V3 P, V3 N, float u, float v, V3 T, V3 B) {
+                // layouts (all: int16 pos x4 at 0, int16 uv at 8):
+                //   0xCA  20 B: pos uv normal colour                  0xBCA 32 B: pos uv uv1 normal colour tangent binormal
+                //   0xDA  28 B: pos uv weights bones normal colour   0xBDA 40 B: pos uv uv1 weights bones normal colour tangent binormal
                 int16_t px[4] = { Qp(P.x, &tooBig), Qp(P.y, &tooBig), Qp(P.z, &tooBig), 1 };
                 size_t at = vb.size(); vb.resize(at + stride);
                 memcpy(&vb[at], px, 8);
                 int16_t uv[2] = { Qu(u), Qu(v) };
                 memcpy(&vb[at + 8], uv, 4);
-                size_t no;
-                if (stride == 32) { memcpy(&vb[at + 12], uv, 4); no = 16; } else no = 12;
+                size_t no = 12;
+                if (tangents) { memcpy(&vb[at + 12], uv, 4); no = 16; }
+                if (skinned) {                                    // the whole vertex on the part's own bone
+                    uint8_t w[4] = { 255, 0, 0, 0 }, bi[4] = { slot, 0, 0, 0 };
+                    memcpy(&vb[at + no], w, 4); memcpy(&vb[at + no + 4], bi, 4); no += 8;
+                }
                 uint8_t nn[4] = { snorm8(N.z), snorm8(N.y), snorm8(N.x), 128 };   // stored z, y, x (D3DCOLOR order)
                 memcpy(&vb[at + no], nn, 4);
                 memset(&vb[at + no + 4], 0xff, 4);
-                if (stride == 32) {
+                if (tangents) {
                     uint8_t tt[4] = { snorm8(T.z), snorm8(T.y), snorm8(T.x), 128 }, bb[4] = { snorm8(B.z), snorm8(B.y), snorm8(B.x), 128 };
-                    memcpy(&vb[at + 24], tt, 4); memcpy(&vb[at + 28], bb, 4);
+                    memcpy(&vb[at + no + 8], tt, 4); memcpy(&vb[at + no + 12], bb, 4);
                 }
             };
             auto it = slotOf.find((int)s);
             if (it == slotOf.end()) {                         // emptied piece: one point, one degenerate triangle
                 int n = 1;
-                if (stride == 20) {                           // keep the next format 32-byte aligned
+                if (stride % 32) {                            // keep the next format 32-byte aligned
                     bool lastOfFmt = true;
                     for (size_t k = s + 1; k < ns; ++k) if (lo.recs[k].fmt == r.fmt) lastOfFmt = false;
-                    if (lastOfFmt) while (((o.fcount[r.fmt] + n) * 20) % 32) ++n;
+                    if (lastOfFmt) while (((o.fcount[r.fmt] + n) * stride) % 32) ++n;
                 }
                 for (int k = 0; k < n; ++k) put({ 0, 0, 0 }, { 0, 0, 1 }, 0.5f, 0.5f, { 1, 0, 0 }, { 0, 1, 0 });
                 o.fcount[r.fmt] += n; o.sNumV[s] = n;
@@ -656,6 +740,12 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
                 const Prim& P = prims[pi];
                 size_t nv = P.pos.size();
                 uint32_t vb0 = o.fcount[r.fmt];
+                slot = 0;
+                if (skinned && primNode[pi] >= 0 && !pal.empty()) {
+                    size_t at = std::find(pal.begin(), pal.end(), (uint16_t)primNode[pi]) - pal.begin();
+                    if (at == pal.size() && pal.size() < 48) pal.push_back((uint16_t)primNode[pi]);
+                    if (at < pal.size()) slot = (uint8_t)at;
+                }
                 if (vb0 + nv > 65535) { R = "the model has too many vertices (65535 at most); simplify it (Decimate in Blender)"; return false; }
                 for (size_t k = 0; k < nv; ++k) {
                     float u = P.uv[k * 2], v = P.uv[k * 2 + 1];
@@ -664,7 +754,8 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
                         u = (c % 2 + std::min(1.f, std::max(0.f, u))) * 0.5f; v = (c / 2 + std::min(1.f, std::max(0.f, v))) * 0.5f;
                     }
                     // model space -> the part's bone space
-                    const Xf& X = partXf[r.part];
+                    Xf X = partXf[r.part];
+                    if (skinned) X = Xf();                        // skinned layouts are in model space
                     float iq[4] = { -X.q[0], -X.q[1], -X.q[2], X.q[3] };
                     V3 lp = qrot(iq, sub(P.pos[k], X.t));
                     put(lp, qrot(iq, P.nrm[k]), u, v, qrot(iq, pT[pi][k]), qrot(iq, pB[pi][k]));
@@ -747,8 +838,14 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
                     p16(out, e + 2, (uint16_t)(ni / 3)); p16(out, e + 4, (uint16_t)(ni / 3));
                     p16(out, e + 6, (uint16_t)std::min<uint32_t>(ni, 65535)); p16(out, e + 10, (uint16_t)nv);
                     p32(out, e + 110, nv); p32(out, e + 142, ni);
+                    if (slotOf.count((int)s) && (lodv[l].fmts[r.fmt].flags & 0x10))      // skinned: our palette
+                        for (size_t k = 0; k < lout[l].sPal[s].size(); ++k) p16(out, e + 14 + 2 * k, lout[l].sPal[s][k]);
                 }
             }
+        } else if (c.tag == "PCMP" && widened && c.dataSize >= 8) {
+            memcpy(&out[o + 24], &pScale, 4);
+        } else if (c.tag == "UCMP" && uvWidened && c.dataSize >= 8) {
+            memcpy(&out[o + 24], &uScale, 4);
         } else if (c.tag == "BBOX" && c.dataSize >= 24) {
             memcpy(&out[o + 20], &mn, 12); memcpy(&out[o + 32], &mx, 12);
         } else if (c.tag == "BSPH" && c.dataSize >= 16) {
@@ -758,6 +855,56 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
         }
     }
     if (!cs.empty()) { size_t tail = cs.back().off + cs.back().size; out.insert(out.end(), tmpl.begin() + tail, tmpl.end()); }
+
+    // --- points: an empty in the .glb named like one of the base model's nodes (IK_LeftHand, FX_FIRE,
+    // FX_CASING...) moves that node there, so the left hand's IK grip, the muzzle flash and the shell
+    // ejection match the new gun. glTF (x, y, z) = game (x, -z, y).
+    std::string moved;
+    {
+        std::vector<Chunk> oc; TopChunks(out, 32, out.size(), oc);
+        const Chunk* onode = nullptr; const Chunk* tnode = nullptr; const Chunk* omb = nullptr;
+        for (auto& c : oc) { if (c.tag == "NODE") onode = &c; else if (c.tag == "O2BM") omb = &c; }
+        for (auto& c : cs) if (c.tag == "NODE") tnode = &c;
+        const J& gn = g.j["nodes"];
+        std::vector<Xf> W = nodeWorld, Lc = nodeLocal; std::vector<bool> changed(nodeWorld.size(), false);
+        auto mulX = [&](const Xf& P, const Xf& L) {
+            Xf w; V3 rt = qrot(P.q, L.t); w.t = { P.t.x + rt.x, P.t.y + rt.y, P.t.z + rt.z };
+            const float* a1 = P.q; const float* b1 = L.q;
+            w.q[0] = a1[3] * b1[0] + a1[0] * b1[3] + a1[1] * b1[2] - a1[2] * b1[1];
+            w.q[1] = a1[3] * b1[1] - a1[0] * b1[2] + a1[1] * b1[3] + a1[2] * b1[0];
+            w.q[2] = a1[3] * b1[2] + a1[0] * b1[1] - a1[1] * b1[0] + a1[2] * b1[3];
+            w.q[3] = a1[3] * b1[3] - a1[0] * b1[0] - a1[1] * b1[1] - a1[2] * b1[2];
+            return w;
+        };
+        for (size_t k = 0; onode && tnode && k < nodeNames.size() && k < Lc.size(); ++k) {     // parents come first
+            int pa = nodeParent[k];
+            std::string nn = nodeNames[k]; for (auto& ch : nn) ch = (char)toupper((unsigned char)ch);
+            for (size_t gi = 0; gi < gn.a.size(); ++gi) {
+                const J& N = gn.a[gi];
+                if (N.has("mesh") || N["name"].s.empty()) continue;
+                std::string want = N["name"].s; for (auto& ch : want) ch = (char)toupper((unsigned char)ch);
+                if (nn != want) continue;
+                const J& T = N["translation"]; const J& Q = N["rotation"];
+                Xf tw;
+                V3 wt = { T.a.size() == 3 ? (float)T.a[0].n : 0.f, T.a.size() == 3 ? -(float)T.a[2].n : 0.f, T.a.size() == 3 ? (float)T.a[1].n : 0.f };
+                tw.t = { wt.x * sc + opt.move[0], wt.y * sc + opt.move[1], wt.z * sc + opt.move[2] };
+                if (Q.a.size() == 4) { tw.q[0] = (float)Q.a[0].n; tw.q[1] = -(float)Q.a[2].n; tw.q[2] = (float)Q.a[1].n; tw.q[3] = (float)Q.a[3].n; }
+                Xf P; if (pa >= 0 && pa < (int)k) P = W[pa];
+                Xf iP; iP.q[0] = -P.q[0]; iP.q[1] = -P.q[1]; iP.q[2] = -P.q[2]; iP.q[3] = P.q[3];
+                iP.t = qrot(iP.q, { -P.t.x, -P.t.y, -P.t.z });
+                Lc[k] = mulX(iP, tw);                         // local = inverse(parent's world, as moved) * target
+                size_t at = onode->off + (nodeOffs[k] - tnode->off);
+                memcpy(&out[at + 16], Lc[k].q, 16); memcpy(&out[at + 32], &Lc[k].t, 12);
+                moved += (moved.empty() ? "" : ", ") + nodeNames[k];
+                changed[k] = true;
+                break;
+            }
+            if (pa >= 0 && pa < (int)k) { W[k] = mulX(W[pa], Lc[k]); if (changed[pa]) changed[k] = true; }
+            else W[k] = Lc[k];
+            // a moved skinned node (or one under it) gets its new inverse bind, so its geometry stays put
+            if (changed[k] && omb && nodeMb[k] >= 0) { float m[16]; invBind(W[k], m); memcpy(&out[omb->off + 24 + 64 * nodeMb[k]], m, 64); }
+        }
+    }
     // header field at +20 tracks the file's size
     int64_t delta = (int64_t)out.size() - (int64_t)tmpl.size();
     p32(out, 20, (uint32_t)((int64_t)rd32(tmpl, 20) + delta));
@@ -768,6 +915,7 @@ bool XbgFromGlb(const Bytes& tmpl, const Bytes& glbFile, const std::string& dir,
              totalTris, mainVerts, nLod, mx.x - mn.x, mx.y - mn.y, mx.z - mn.z, texCount);
     R = b;
     for (auto& G : grps) if (G.name != "FRAME" && !G.prims.empty()) R += " " + G.name + ": on the weapon's " + G.name + " part (animated).";
+    if (!moved.empty()) R += " Moved to the .glb's points: " + moved + ".";
     if (merged) R += " " + std::to_string(merged) + " extra material(s) share a texture (packed into an atlas).";
     R += texNote;
     return true;

@@ -1,5 +1,5 @@
 // .glb (glTF 2.0 binary) -> Far Cry 4 .xbg, for COMPLETELY new weapon models.
-// Plain C++ (no Windows), shared by fc4hook.asi and tools/fc4mdl.exe.
+// Plain C++ (no Windows), used by fc4hook.asi.
 //
 // A weapon model isn't only triangles: it has the bones the weapon's animations move (FRAME,
 // CLIP, SLIDE...), skin clusters, LODs and materials. Writing all that from nothing would mean

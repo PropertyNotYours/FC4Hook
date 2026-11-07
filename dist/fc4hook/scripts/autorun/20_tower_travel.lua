@@ -296,7 +296,7 @@ function T.tourStart()
   end
   if #todo == 0 then ModLog("Tour: every liberated tower is already in the reward table") return end
   T.tour = { list = todo, i = 0, start = T.myPos(), learned = 0, skipped = 0 }
-  ModLog(string.format("Tour: visiting %d towers (about %d s). Stop it from the Travel tab.", #todo, #todo * T.tourWait))
+  ModLog(string.format("Tour: visiting %d towers (about %d s). Stop it from the Teleport page.", #todo, #todo * T.tourWait))
   T.tourNext()
 end
 
@@ -363,4 +363,4 @@ FC4Ticks = FC4Ticks or {}
 FC4Ticks.travel = T.tick
 
 pcall(ModTowerPositions)
-ModLog("FC4Travel loaded (Travel tab: jump to liberated bell towers)")
+ModLog("FC4Travel loaded (Teleport page: jump to liberated bell towers)")

@@ -359,20 +359,6 @@ bool ExtractModel(const std::string& path, std::string* msg) {
     return true;
 }
 
-bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFile, const std::wstring& outFile, std::string* msg) {
-    std::string p = LowerA(originalGamePath);
-    for (auto& c : p) if (c == '/') c = '\\';
-    std::vector<uint8_t> xbg, obj; std::string err;
-    if (!AnyFileRead(FileId(p.c_str()), xbg, &err, nullptr)) { *msg = "Couldn't read the original model " + p + ": " + err; return false; }
-    if (!ReadWhole(objFile, obj) || obj.empty()) { *msg = "Couldn't read " + Narrow(objFile); return false; }
-    std::string rep;
-    if (!XbgFromObj(xbg, std::string(obj.begin(), obj.end()), &rep)) { *msg = "Not converted: " + rep; return false; }
-    if (!WriteFileAll(outFile, xbg)) { *msg = "Couldn't write " + Narrow(outFile); return false; }
-    *msg = "Converted: " + rep;
-    Log("models: %s -> %s: %s", Narrow(objFile).c_str(), Narrow(outFile).c_str(), rep.c_str());
-    return true;
-}
-
 struct GlbFile { std::string path; std::vector<uint8_t> data; };
 struct GlbOptions { float scale = 1.f; float move[3] = { 0, 0, 0 }; };
 bool XbgFromGlb(const std::vector<uint8_t>& tmpl, const std::vector<uint8_t>& glb, const std::string& dir, const std::string& stem,
@@ -561,7 +547,7 @@ bool MakeSwap(uint64_t replaceId, const std::string& replacePath, uint64_t withI
         fclose(f);
     }
     *msg = "swap mod written: " + (replacePath.empty() ? HexId(replaceId) : replacePath) + " now loads " +
-           (withPath.empty() ? HexId(withId) : withPath) + ". Restart the game to see it (mods\\FC4Hook_SwapTest; untick it in the Mods tab to undo).";
+           (withPath.empty() ? HexId(withId) : withPath) + ". Restart the game to see it (mods\\FC4Hook_SwapTest; untick it under Installed Mods to undo).";
     Log("swap: %s", msg->c_str());
     return true;
 }

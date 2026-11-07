@@ -8,7 +8,7 @@
 --   ModVersion()                                "1.3.0"
 --   ModArchiveStatus()                          state of data_win32\fc4hook_mods.dat
 --   ModTeleportEntityPos / ModGetEntityPositionVec3   game natives FC4Hook digs out
---   ...and the tower helpers used by the Co-op and Travel tabs.
+--   ...and the tower helpers used by the Co-op and Teleport pages.
 -- Everything else (CAPI_Pawn.*, SetTimeOfDay, ...) is the game's own API:
 -- turn on DeveloperMode in fc4hook.ini and use Developer > Dump natives to list it.
 --

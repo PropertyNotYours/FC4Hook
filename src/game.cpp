@@ -136,7 +136,6 @@ void AddTickCallback(void (*cb)(lua_State*)) {
     s_tickCbs.push_back(cb);
 }
 void RequestAutorunReload() { s_reloadAutorun = true; s_pending = true; }
-bool GameReady() { return s_ready; }
 bool LuaReady()  { return s_luaReady; }
 const char* BridgeStatus() { return s_luaReady ? "live" : s_status; }
 uint64_t LuaHookCalls() { return s_hookCalls.load(); }
@@ -642,7 +641,7 @@ std::vector<TravelSpot> TravelList() {
     return s_travel;
 }
 
-// ModTowerPositions() -> "id:x,y,z;..." for every unlocked tower (also feeds the Travel tab)
+// ModTowerPositions() -> "id:x,y,z;..." for every unlocked tower (also feeds the Teleport page)
 static int L_ModTowerPositions(lua_State* L) {
     ResolveTowerHelpers(L);   // makes sure the registry global is resolved
     uint8_t* mgr = TowerManager(L);
@@ -825,7 +824,6 @@ bool GameEvalString(lua_State* L, const std::string& code, const char* chunk, st
     my_settop(L, top);
     return st == 0 && s != nullptr;
 }
-lua_State* GameLuaState() { return GetLuaState(); }
 
 // ModKeyDown(vk) -> true while that key is held (only when the game window has focus
 // and you're not typing in the menu). For script hotkeys and fly controls.

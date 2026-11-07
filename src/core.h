@@ -8,7 +8,7 @@
 #include <map>
 #include "../include/fc4hook.h"
 
-#define FC4HOOK_VERSION      "1.13.6"
+#define FC4HOOK_VERSION      "1.13.8"
 #define FC4HOOK_TITLE        "FC4Hook v" FC4HOOK_VERSION
 
 namespace fc4 {
@@ -68,7 +68,6 @@ int  RemoveHook(void* target);
 
 // ---- game / lua bridge ---------------------------------------------------
 bool GameInit();                          // resolve signatures, install hooks
-bool GameReady();                         // signatures resolved
 bool LuaReady();                          // script thread has ticked at least once
 const char* BridgeStatus();               // human-readable state for the menu
 uint64_t LuaHookCalls();                  // how many times the Lua VM called our hook
@@ -176,12 +175,9 @@ bool ExtractModel(const std::string& path, std::string* msg);
 bool ImageToXbt(const std::vector<uint8_t>& img, char kind, std::vector<uint8_t>& out, std::string* err);
 bool ImageToXbtSplit(const std::vector<uint8_t>& img, char kind, const std::string& mip0Path, std::vector<uint8_t>& mainOut, std::vector<uint8_t>& mip0Out, std::string* err);   // texmake.cpp
 void FlatXbt(char kind, uint8_t level, std::vector<uint8_t>& out);
-bool XbgFromObj(std::vector<uint8_t>& xbg, const std::string& objText, std::string* report);   // xbgpatch.cpp
-// Edited .obj -> .xbg: the original model is read from the game (or a mod), patched, written to outFile.
 // .glb -> a completely new model on the base weapon's skeleton; files go to mods\<mod>\files\<dir>
 bool ModelFromGlb(const std::string& baseGamePath, const std::wstring& glbFile, const std::wstring& modFilesDir, const std::string& gameDir,
                   const std::string& stem, float scale, const float move[3], std::string* outGamePath, std::string* msg);
-bool ModelFromObj(const std::string& originalGamePath, const std::wstring& objFile, const std::wstring& outFile, std::string* msg);      // .xbg + its materials + textures
 std::vector<std::string> ArchetypeModels(uint64_t id);             // .xbg paths an archetype uses
 void RunExtractJob(std::function<void()> job);
 bool TextureToDds(const std::string& rel, std::string* msg);    // dumps\extracted\<rel>.xbt -> .dds
@@ -210,7 +206,6 @@ void*       LuaNativeFn(lua_State* L, const char* name);
 void*       EntityObject(lua_State* L, uint64_t id);
 struct LuaReg { const char* name; lua_CFunction fn; };
 bool        GameEvalString(lua_State* L, const std::string& code, const char* chunk, std::string* out);
-lua_State*  GameLuaState();
 bool        GameHasFocus();                      // overlay.cpp
 bool        MenuWantsKeyboard();                 // overlay.cpp
 
@@ -231,7 +226,6 @@ void LuaUiOpen(lua_State* L54);                  // adds fc4.ui to the fc4 table
 void LuaUiReset();
 std::vector<UiEvent> LuaUiTakeEvents();
 void LuaUiDraw(bool menuOpen);                   // render thread
-int  LuaUiWindowCount();
 
 // Cheat Engine style address expressions: "FC64+2DD8958", "[FC64+2DD8958]+8", "0x7FF6...",
 // "[[game.exe+10]+20]-8". Numbers are hex (0x optional). Returns false + reason on error.
@@ -246,7 +240,6 @@ bool        MemWriteValue(uintptr_t a, const char* type, const char* value, std:
 bool OverlayInit();
 bool AudioInit();                                // XAudio2 hooks for slow-motion sound (audio.cpp)
 void AudioSetSpeed(float speed);
-float AudioGetSpeed();
 int AudioVoiceCount();
 bool InputInit();                                // DirectInput keyboard filter (input.cpp)
 void PadPassThrough(bool on);                    // this thread reads the real pad (menu)

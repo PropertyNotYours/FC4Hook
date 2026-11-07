@@ -9,15 +9,18 @@ FC4Hook ships no custom content. Weapon/content mods are separate packages that 
 loads (see "Mods" below).
 
 ## Layout
+A file-by-file map for readers (and for feeding to another AI) is in `docs/CODE_MAP.md`.
+
 ```
 src/main.cpp        startup, default ini, heartbeat
 src/util.cpp        config, logger (levels, rotation), crash reports, pattern scanner, MinHook
 src/game.cpp        Lua bridge, built-in Lua functions, state store, hidden natives,
                     bell tower data, mod archive mount, custom string loader, file trace
-src/overlay.cpp     ImGui menu: Cheats / Armory / Travel / Co-op / Console / Settings /
-                    Developer / About, hotkeys
+src/overlay.cpp     D3D11 Present hook, Dear ImGui startup, input polling, sidebar + menu frame
+src/menu_common.*   widgets and helpers shared by the menu pages
+src/page_*.cpp      one file per menu page (cheats, weapons, teleport, spawn, workshop, ...)
 src/lua54.cpp       embedded Lua 5.4 runtime + game bridge (game.*, mem.*, fc4.*)
-src/memory.cpp      memory binder: Mem* Lua functions, address expressions, Memory tab helpers
+src/memory.cpp      memory binder: Mem* Lua functions, address expressions, Developer > Memory page helpers
 src/plugins.cpp     loads fc4hook\plugins\*.dll
 src/core.h          internal declarations, version
 include/fc4hook.h   public C API for plugins (API v3)
@@ -123,7 +126,7 @@ API v3 (1.2) adds `HookVtable`/`UnhookVtable` (swap a virtual table entry), `OnP
   Ids are CRC-64 (poly 0xD800000000000000, reflected, init 0) of the lower-case path, the same
   as FC64's FUN_180001280; `__UNKNOWN\...\<16 hex>.ext` keeps its hash. See
   `dist/fc4hook/mods/README.txt`.
-* File log: hooks FC64's path-to-id function (FUN_180060ed0 on 1.10) and records each new
+* File Activity page: hooks FC64's path-to-id function (FUN_180060ed0 on 1.10) and records each new
   path once to `dumps\file_log.txt`.
 * Archetypes are loaded per id from `entityarchetypeslibrary\<id>.ark.fcb` (FUN_1807249d0), so
   a new id = a new loose file; no table to patch.
@@ -131,7 +134,7 @@ API v3 (1.2) adds `HookVtable`/`UnhookVtable` (swap a virtual table entry), `OnP
   free archive slot at priority -2 (above patch.dat), so its files override the game's.
 * `fc4hook\languages\english\strings.bin` inside that archive is added to the game's
   string tables (custom names/descriptions).
-* `fc4hook\mods\<Mod>\armory.txt` lists the mod's weapons in the Armory.
+* `fc4hook\mods\<Mod>\armory.txt` lists the mod's weapons on the Weapons page.
 
 ## Building
 **Windows (Visual Studio 2019/2022 with C++ workload + CMake):**

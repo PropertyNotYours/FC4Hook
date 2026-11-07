@@ -7,7 +7,7 @@ Far Cry 3 Blood Dragon weapons -> Far Cry 4 (same engine, same file formats)
                               weapon, so FC4's animations move them (skinned base weapons, e.g. the PKM)
      --point NAME=x,y,z[,qx,qy,qz,qw]   move a base-weapon node (game space: x right, y forward, z up)
    Points the base weapon has too (IK_LeftHand, FX_FIRE, FX_CASING) are exported automatically.
-3. FC4Hook > Workshop > your weapon > Model: use the .glb.
+3. FC4Hook > Mods > Weapon Workshop > your weapon > Model: use the .glb.
 
 The Overkill (bd_minigun) on the PKM:
    python fc3xbg2glb.py e6d127ce06c54b47.xbg overkill.glb --extracted <out folder>
@@ -15,7 +15,7 @@ The Overkill (bd_minigun) on the PKM:
        --point PKM_AmmoLid=0.0938,0.2163,0.0458,0,0.2470,0,0.9690
    Barrels on PKM_Tripod2 (never animated by the PKM), the feed flap on the PKM's ammo-box lid (its bind pose
    moved to the lid's rest pose in the clips), the ammo chain on the ammo box.
-   Its clips: for each PKM clip, export it from FC4Hook (Workshop > Animations > Export .glb), then
+   Its clips: for each PKM clip, export it from FC4Hook (Weapon Workshop > Animations > Export .glb), then
        clipdump.exe <the clip file> > clip.json
        python overkill_clips.py clip.glb clip.json new.glb [--spin]
    and use new.glb on that clip's row. --spin on the five fire clips (0.70 s) adds the barrel spin:

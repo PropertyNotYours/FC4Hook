@@ -1,6 +1,27 @@
 FC4Hook changelog
 =================
 
+1.13.8
+  - Removed tools that .glb models and the in-game clip tools replaced: the .obj -> .xbg converter (Models &
+    Textures page section, Weapon Workshop "edited .obj" option, fc4mdl.exe) and the Python clip prototypes
+    (ani_decode / ani_encode / ani2glb). Weapon Workshop's model box now takes .glb files only.
+  - Removed scripts\probe_args.lua (the Natives page does the same) and four unused internal functions.
+  - Docs: mods\README.txt custom-model steps rewritten for .glb; page names brought up to date.
+
+1.13.7
+  - The menu no longer reacts to the mouse while the game is not the foreground window (alt-tabbed):
+    clicks on other windows used to press menu buttons underneath them, and the menu cursor stayed visible.
+  - The menu uses Segoe UI (from the Windows fonts folder) instead of the built-in pixel font; if the font
+    file is missing the old font is kept.
+  - Sidebar renamed and regrouped. Play: Cheats, Weapons (was Armory), Teleport (was Travel), Spawn
+    (was Spawner), Co-op. Mods: Weapon Workshop, Models & Textures, Installed Mods (was Mods). Developer:
+    Lua (the old "Lua 5.4" and "Scripts" pages merged), Natives, Memory, Animation, File Activity (was File
+    log), Co-op Debug (was Co-op tools), Diagnostics. FC4Hook: Console, Settings, About.
+  - Source: overlay.cpp (3,100 lines) is split into one file per menu page (src/page_*.cpp) plus
+    menu_common.h/.cpp for shared widgets; page functions are named Draw<Page>Page. New docs/CODE_MAP.md.
+    No behaviour change apart from the items above.
+  - Repo clean-up: removed compiled Python caches and a duplicate fc3xbg2glb.py.
+
 1.13.6
   - Model import on skinned base weapons: an object named like one of the base model's skinned nodes
     (PKM_AmmoLid, PKM_AmmoBox, PKM_Tripod2...) rides that node, so the game's animations move it. Points that

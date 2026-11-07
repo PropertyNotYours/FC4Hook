@@ -51,7 +51,7 @@ Status: being reverse-engineered for FC4Hook custom animations. FC64.dll patch 1
     - else: u8 min, u8 range, then nKeys values of `bits` bits:
       value = min/127 - 1 + (range/127.5) * q / (2^bits - 1)
   - rebuilt component = sqrt(max(0, 1 - a^2 - b^2 - c^2)), inserted at its index
-- decoder: tools/ani_decode.py
+- decoder: src/aniclip.cpp
 
 ## Translations (positions) - FUN_1804f5060 (verified: bone lengths, smooth animated tracks)
 - flags & 0xc0: 0xc0 = constant position, 0x40 = animated position, 0 = none
@@ -70,14 +70,14 @@ Status: being reverse-engineered for FC4Hook custom animations. FC64.dll patch 1
 - clip + u32(clip+0x14): one u32 per track = crc32(bone name) (case as in the skeleton, e.g. "RightHand")
 - first-person arms skeleton: graphics\_common\characters\narrative\firstpersonarms\firstperson_*.xbg
   (133 nodes; arm clips drive 58 of them)
-- tools/ani2glb.py <clip.ani> <skeleton.xbg> <out.glb>: clip -> glTF armature + animation (Blender)
+- clip -> glTF armature + animation (Blender): Weapon Workshop > Animations > Export .glb
 
 ## More sections (copied and moved when rebuilding a clip)
 - +0x38 (high byte +0x46): nested "aNi" clips for attached objects (the weapon's own animation, per hand)
 - +0x3a (high byte +0x47): event block ("nbCF" EntityEvent: sounds etc.)
 - +0x2c: a u16 list (unknown); +0x34 / +0x36: two root tracks (block streams)
 
-## Writing a clip (src/aniclip.cpp, tools/ani_encode.py)
+## Writing a clip (src/aniclip.cpp)
 - template = the clip being replaced; its other sections are kept and moved; offsets rewritten
 - additive layers (identity constant rotations) are exported on top of the rest pose and taken back off when encoding
 - verified: re-encoding game clips gives <= 0.006 deg error and the same animated tracks; plays in game

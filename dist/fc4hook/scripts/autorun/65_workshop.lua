@@ -99,7 +99,7 @@ function W.tick()
       if done then
         if j.done then pcall(j.done) end
       elseif now - j.first > 15 then
-        ModLogWarn("Workshop: " .. tostring(j.name) .. " didn't load in 15 s (use Check files in the Workshop tab)")
+        ModLogWarn("Workshop: " .. tostring(j.name) .. " didn't load in 15 s (use Check files in Weapon Workshop)")
         ModSetState("workshop.status", tostring(j.name) .. " didn't load: use Check files")
       else
         keep[#keep + 1] = j
@@ -111,7 +111,7 @@ function W.tick()
   W.jobs = keep
 end
 
--- every give goes through here, so the Armory tab is safe too
+-- every give goes through here, so the Weapons page is safe too
 if FC4Armory and FC4Armory.give and not W.armoryGive then
   W.armoryGive = FC4Armory.give
   FC4Armory.give = function(id, name) return W.give(id, name) end

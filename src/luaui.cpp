@@ -232,6 +232,5 @@ void LuaUiDraw(bool menuOpen) {
     }
 }
 
-int LuaUiWindowCount() { std::lock_guard<std::mutex> lk(s_uiMx); return (int)s_windows.size(); }
 
 } // namespace fc4

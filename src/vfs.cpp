@@ -14,7 +14,7 @@
 //     under that hash.
 //   * Load order: mods are applied alphabetically, or in the order of mods\load_order.txt
 //     (one folder name per line); a later mod wins when two mods ship the same file.
-//   * Disable a mod: F8 > Developer > Mods, or start its folder name with "_".
+//   * Disable a mod: F8 > Mods > Installed Mods, or start its folder name with "_".
 //
 // FILE LOG
 //   Every path the game turns into a file id goes through one function in FC64.dll
@@ -311,7 +311,7 @@ void VfsMounted(bool ok) {
     else s_vfsStatus += ", mounted";
 }
 
-// Every loose file the archive holds (for the Mods tab's file browser).
+// Every loose file the archive holds (for the Installed Mods page's file browser).
 std::vector<VfsFileEntry> VfsFiles() {
     std::lock_guard<std::mutex> lk(s_vfsMx);
     std::vector<VfsFileEntry> r;

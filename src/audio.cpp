@@ -170,7 +170,6 @@ void AudioSetSpeed(float speed) {
     ++s_gen;
 }
 
-float AudioGetSpeed() { return s_speed.load(); }
 int AudioVoiceCount() { std::lock_guard<std::mutex> lk(s_mx); return (int)s_voices.size(); }
 
 } // namespace fc4

@@ -20,7 +20,7 @@ FC4Hook loads into Far Cry 4 and gives you an in-game menu (F8) with:
   CONSOLE    Live log with filters, copy and an in-game Lua console.
   MODS       Install mods as plain folders: fc4hook\mods\<ModName>\files\ holds game files
              (textures, models, archetypes, animations...) the game loads instead of
-             its own, or in addition to them. Switch mods on/off in the Mods tab.
+             its own, or in addition to them. Switch mods on/off on the Installed Mods page.
   MODDING    Runs Lua scripts and C++ plugins inside the game, a file log that shows every
              file the game loads, a spawner, animation tools, a memory binder, Lua 5.4.
 
@@ -49,22 +49,19 @@ INSTALL
 UPDATING FROM AN OLDER FC4HOOK
 ------------------------------
   Copy over the old files. Your settings, saved positions and co-op tower data are kept.
-  From 1.0.0 / 1.2.x / 1.3.x: nothing to delete.
-  Old files you can delete:  fc4hook\mods\armory.txt  and these scripts if present:
-  armory_test.lua, extract_*.lua, find_weather_presets.lua, autorun\00_hello.lua.
-  FC4Hook 1.0 contains no custom weapons. If you use a weapon mod that was made for
-  FC4Hook 0.x, keep its files: give it an armory.txt in its mods\ folder (see
-  fc4hook\mods\README.txt) to list it in the Armory.
+  Weapon mods keep working: give a mod an armory.txt in its mods\ folder (see
+  fc4hook\mods\README.txt) to list it on the Weapons page.
 
 USING IT
 --------
   F8                 open/close the menu (change the key in Settings)
+                     The menu ignores the mouse while you are alt-tabbed out of the game.
   L3 + R3 (hold)     open/close the menu with a gamepad
-  Cheats tab         tick a switch to turn it on; it stays on until you untick it
-  Armory tab         "Give" puts the weapon straight in your weapon wheel.
+  Cheats page        tick a switch to turn it on; it stays on until you untick it
+  Weapons page       "Give" puts the weapon straight in your weapon wheel.
                      Click + to add a favourite. Your own entries: fc4hook\armory\custom.txt
-  Settings tab       menu key, hotkeys, menu size, log level, crash reports
-  Console tab        what FC4Hook is doing; Lua commands for script authors
+  Settings page      menu key, hotkeys, menu size, log level, crash reports
+  Console page       what FC4Hook is doing; Lua commands for script authors
 
   Features are greyed out until you're in the world (the game's scripts aren't
   running in the main menu).

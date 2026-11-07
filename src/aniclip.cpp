@@ -1,6 +1,5 @@
 // Far Cry 4 animation clips ("aNi", CAnimationResource): read, export to .glb, and write from a .glb.
-// Plain C++ (no Windows). Format notes: docs/ANI_FORMAT.md. Prototypes (verified against game clips):
-// tools/ani_decode.py, tools/ani2glb.py, tools/ani_encode.py.
+// Plain C++ (no Windows). Format notes: docs/ANI_FORMAT.md.
 //
 // File = 0x18-byte resource header + the clip. Offsets below are from the clip start.
 //   +0x04 u16 tracks (low 12 bits; top 2 bits = layout, only 0 supported)   +0x06 u16 frames (keys = frames + 1)
